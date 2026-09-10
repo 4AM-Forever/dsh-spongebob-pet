@@ -11,7 +11,7 @@ import assert from 'node:assert/strict'
 const home = await mkdtemp(join(tmpdir(), 'pet-smoke-'))
 process.env.DSH_HOME = home
 
-const { apply } = await import('../dsh/index.js')
+const { apply } = await import('../lib/index.js')
 
 const routes = new Map()
 const listeners = new Map()
@@ -24,6 +24,14 @@ const scope = {
       routes.set(route.path, route)
       return () => routes.delete(route.path)
     },
+  },
+  // 设置卡片的桩：让 registerSettingsCard 走到「注册成功」分支，不再打警告
+  settings: {
+    register: () => ({
+      get: () => ({}),
+      update: () => {},
+      watch: () => {},
+    }),
   },
   on() {},
 }
@@ -82,6 +90,18 @@ const check = (label, ok) => {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${label}`)
 }
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+/**
+ * 桌面宠上线：在线判定只认长轮询，所以每个用例前先挂一个取件请求。
+ * 注意这里**只等 150ms 让请求落地**，不能 await 轮询本身（那会把长轮询等完，桌宠又变离线）。
+ * 挂着的那个请求放进 waitingPoll，有 pending 事件时会被立刻唤醒，正好拿来断言事件流。
+ */
+let waitingPoll = null
+async function petOnline() {
+  waitingPoll = fetch(`${base}/pet/events?since=0`, { headers: auth }).then((res) => res.json())
+  await sleep(150)
+}
+
 // 1. 握手与令牌
 check('无令牌的 /pet/state 被拒', (await fetch(`${base}/pet/state`)).status === 403)
 check('带令牌的 /pet/hello 正常', (await fetch(`${base}/pet/hello`, { headers: auth })).status === 200)
@@ -89,12 +109,12 @@ check('带令牌的 /pet/hello 正常', (await fetch(`${base}/pet/hello`, { head
 // 2. 审批：桌宠取件并允许
 const approvalListener = listeners.get('approval/request')[0]
 check('审批监听器以 prepend 注册', approvalListener.options?.prepend === true)
+await petOnline()
 const approvalPromise = approvalListener.listener(
   { agent: { session: { header: { id: 'sess-1' } } }, toolName: 'pwsh', reason: 'workspace-write' },
   async () => 'unavailable',
 )
-await new Promise((resolve) => setTimeout(resolve, 60))
-const events = await (await fetch(`${base}/pet/events?since=0`, { headers: auth })).json()
+const events = await waitingPoll
 const pendingApproval = events.pending[0]
 check('桌宠收到待审批项', pendingApproval?.kind === 'approval' && pendingApproval.approval.toolName === 'pwsh')
 check('事件流带出 pending 事件', events.events.some((event) => event.type === 'pending'))
@@ -104,14 +124,16 @@ check('作答接口返回 200', allowResponse.status === 200)
 check('审批解析为 allowed-once', (await approvalPromise) === 'allowed-once')
 
 // 3. 审批：拒绝
+await petOnline()
 const denyPromise = approvalListener.listener({ agent: { session: { header: { id: 'sess-1' } } }, toolName: 'pwsh' }, async () => 'unavailable')
-await new Promise((resolve) => setTimeout(resolve, 60))
+await sleep(80)
 const pendingDeny = (await (await fetch(`${base}/pet/state`, { headers: auth })).json()).pending[0]
 await post('/pet/answer', { id: pendingDeny.id, decision: 'deny' })
 check('审批解析为 rejected', (await denyPromise) === 'rejected')
 
 // 4. 提问：选项作答与非法作答
 const questionListener = listeners.get('user-questions/request')[0]
+await petOnline()
 const questionPromise = questionListener.listener(
   {
     agent: { session: { header: { id: 'sess-1' } } },
@@ -121,7 +143,7 @@ const questionPromise = questionListener.listener(
     throw new Error('should not delegate')
   },
 )
-await new Promise((resolve) => setTimeout(resolve, 60))
+await sleep(80)
 const pendingQuestion = (await (await fetch(`${base}/pet/state`, { headers: auth })).json()).pending[0]
 check('待答问题带出选项', pendingQuestion?.questions?.[0]?.options?.length === 2)
 const badAnswer = await post('/pet/answer', { id: pendingQuestion.id, answers: [{ id: 'q1', selected: ['Z'] }] })
@@ -129,26 +151,28 @@ check('非法选项被过滤为空答案并接受', badAnswer.status === 200)
 check('问题作答形态正确', JSON.stringify(await questionPromise) === JSON.stringify({ answers: [{ id: 'q1', selected: [] }] }))
 
 // 5. 委派：桌宠把决定交回网页
+await petOnline()
 const delegatePromise = questionListener.listener(
   { agent: { session: { header: { id: 'sess-1' } } }, questions: [{ id: 'q1', question: '？', options: [{ label: 'A' }] }] },
   async () => 'delegated-to-web',
 )
-await new Promise((resolve) => setTimeout(resolve, 60))
+await sleep(80)
 const pendingDelegate = (await (await fetch(`${base}/pet/state`, { headers: auth })).json()).pending[0]
 await post('/pet/answer', { id: pendingDelegate.id, delegate: true })
 check('委派后回落到原生应答者', (await delegatePromise) === 'delegated-to-web')
 
-// 6. 超时回退
+// 6. 超时回退（桌宠在线但一直不答 → 超时后交回）
+await petOnline()
 const timeoutListener = approvalListener.listener({ agent: { session: { header: { id: 'sess-1' } } }, toolName: 'bash' }, async () => 'fell-back')
 check('超时后回落到原生应答者', (await timeoutListener) === 'fell-back')
 
-// 7. 桌宠离线时不接管
-await new Promise((resolve) => setTimeout(resolve, 4200))
+// 7. 桌宠离线时不接管（心跳过期）
+await sleep(4200)
 const offline = approvalListener.listener({ agent: { session: { header: { id: 'sess-1' } } }, toolName: 'bash' }, async () => 'offline-fallback')
 check('桌宠离线时不接管', (await offline) === 'offline-fallback')
 
 // 8. 免打扰
-await fetch(`${base}/pet/hello`, { headers: auth })
+await petOnline()
 const control = await post('/pet/control', { dnd: true })
 check('免打扰开关写入成功', (await control.json()).dnd === true)
 const dndResult = approvalListener.listener({ agent: { session: { header: { id: 'sess-1' } } }, toolName: 'bash' }, async () => 'dnd-fallback')

@@ -32,7 +32,7 @@ const ctx = {
   },
 }
 
-const { apply } = await import('../dsh/index.js')
+const { apply } = await import('../lib/index.js')
 apply(ctx, { longPollMs: 20000, petIdleMs: 60000, approvalTimeoutMs: 600000, questionTimeoutMs: 600000 })
 
 const fakeAgent = { session: { header: { id: 'test-session', title: '联调测试会话' } } }

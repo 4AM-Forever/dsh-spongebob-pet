@@ -1,0 +1,43 @@
+{
+  "name": "dsh-spongebob-pet",
+  "version": "0.4.0",
+  "type": "module",
+  "description": "SpongeBob desktop pet for the DSH web GUI: hands approvals and user questions to a topmost desktop card you can answer directly, and can be launched from Settings → Plugins.",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "desktop-pet",
+    "spongebob",
+    "approval",
+    "wpf"
+  ],
+  "license": "MIT",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "pet",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22.19"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [],
+      "platform": "web",
+      "immediately": true
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1"
+  }
+}
