@@ -154,7 +154,24 @@ dsh-spongebob-pet/
 | DSH 断开清理 | 弹着卡片时杀掉桥接服务 | 30 秒后卡片自动关闭、待答清空，桌宠不残留假卡片 |
 | 压暗遮罩 | 对比弹卡前后屏幕亮度 | 13.9 vs 25.0（≈44% 变暗） |
 | 插件挂载 | `dsh --profile web --dump-config` | 配置树中出现 `id: spongebob-pet` |
-| 真机 DSH 链路 | 重启 `dsh web` 后由真人作答 | 待验证（插件需重启才加载） |
+| **真机 DSH 链路** | 重启 `dsh web` 后由真人作答；轮询桥接 + UI Automation 留证 | `pending=1 state=asking 卡片窗口:在屏=True` → 皇上的卡片点击 → `pending=0`，答案回传 DSH |
+| 语法自检关 | `tools/check-syntax.ps1`；反向测试一个「两行并一行」的文件 | 16 个文件全过；反向测试按预期失败（退出码 1） |
+
+## 改代码的安全流程（血泪教训）
+
+2026-09-10 出过一次**插件语法错导致 `dsh web` 直接起不来**的事故：`bridge/dsh/index.js` 里 `let last = ...` 与 `const timer = ...` 之间的换行被编辑操作吃掉，两条语句并成一行，无分号语句失去 ASI 依据 → ESM 解析失败 → 插件树加载失败 → DSH 进程 exit（报错 `failed to import loader entry spongebob-pet Unexpected token 'const'`）。
+
+现在有三道防线，改完插件**按顺序**走：
+
+| 步骤 | 命令 | 作用 |
+|---|---|---|
+| 1. 语法关 | `powershell -ExecutionPolicy RemoteSigned -File tools\check-syntax.ps1` | JS 走 `node --check`、PS1 走 PowerShell 解析器、JSON 走 `ConvertFrom-Json`；任何一项不过就退出码 1 |
+| 2. 重启（自带第 1 步） | `tools\restart-dsh.ps1` | 重启前先跑语法关，**不过就拒绝重启**（DSH 保持原状，不会被带崩） |
+| 3. 链路自检 | `tools\verify-live.ps1` | 插件路由 + 桌宠进程 + 窗口在屏 + 长轮询心跳，四项硬证据 |
+
+另外：项目已 `git init`（首个提交 `6f212c1`），这类「某行被吃掉」的损坏现在能一眼 diff 出来。
+
+**注意**：本目录下的 `.ps1` 必须存成 **UTF-8 带 BOM**（Windows PowerShell 5.1 没 BOM 就按 GBK 读，中文变乱码会直接语法报错）；`tools/verify-live.ps1` 特意写成纯 ASCII 免踩这个坑。本机执行策略是 `Restricted`，跑脚本一律带 `-ExecutionPolicy RemoteSigned`。
 
 ## 故障排查
 
