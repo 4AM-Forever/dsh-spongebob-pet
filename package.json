@@ -1,6 +1,6 @@
 {
   "name": "dsh-spongebob-pet",
-  "version": "0.4.0",
+  "version": "0.1.0",
   "type": "module",
   "description": "SpongeBob desktop pet for the DSH web GUI: hands approvals and user questions to a topmost desktop card you can answer directly, and can be launched from Settings → Plugins.",
   "keywords": [
