@@ -1,0 +1,4 @@
+# dsh bundle layer: mount the SpongeBob desktop-pet bridge.
+- insert:
+    - id: spongebob-pet
+      name: dsh-spongebob-pet
