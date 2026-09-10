@@ -37,13 +37,22 @@ Write-PetLog '依赖库加载完成'
 
 # ---------- 配置 ----------
 
+# 三档尺寸：画布 220×284 就是「大」档基准，中/小按比例缩
+$script:SizePresets = [ordered]@{
+  large  = @{ scale = 1.0;  label = '大' }
+  medium = @{ scale = 0.72; label = '中' }
+  small  = @{ scale = 0.5;  label = '小' }
+}
+$script:CurrentSize = 'large'
+$script:SizeMenuItems = @{}
+
 $defaults = [ordered]@{
   topmost      = $true
   dimScreen    = $true
   sound        = $true
   dnd          = $false
   opacity      = 1.0
-  scale        = 1.0
+  size         = 'large'
   bridgeUrl    = ''
   pollTimeout  = 40
   position     = @{ x = -1; y = -1 }
@@ -56,8 +65,52 @@ if (Test-Path $configPath) {
     if ($null -ne $loaded.$name) { $config.$name = $loaded.$name }
   }
 }
+
+# 写盘先读盘再合并：size 可能被 DSH 设置页改过，桌宠自己保存位置时不能把它冲掉
 function Save-Config {
-  $config | ConvertTo-Json -Depth 5 | Set-Content -Path $configPath -Encoding UTF8
+  param([switch]$WithSize)
+  $out = [ordered]@{}
+  if (Test-Path $configPath) {
+    try {
+      $disk = Get-Content $configPath -Raw -Encoding UTF8 | ConvertFrom-Json
+      foreach ($property in $disk.PSObject.Properties) { $out[$property.Name] = $property.Value }
+    } catch { }
+  }
+  foreach ($name in @('topmost', 'dimScreen', 'sound', 'dnd', 'opacity', 'bridgeUrl', 'pollTimeout')) {
+    if ($null -ne $config.$name) { $out[$name] = $config.$name }
+  }
+  if ($WithSize -or -not $out.Contains('size')) { $out['size'] = [string]$config.size }
+  $out['position'] = @{ x = [int]$config.position.x; y = [int]$config.position.y }
+  $out | ConvertTo-Json -Depth 5 | Set-Content -Path $configPath -Encoding UTF8
+}
+
+function Get-PetScale([string]$size) {
+  if ($script:SizePresets.Contains($size)) { return [double]$script:SizePresets[$size].scale }
+  return 1.0
+}
+
+# 切换档位：缩放画布 + 同步窗口尺寸（窗口必须跟着变，否则内容会被裁掉）
+function Apply-PetSize([string]$size, [bool]$persist = $false) {
+  if (-not $script:SizePresets.Contains($size)) { $size = 'large' }
+  $scale = Get-PetScale $size
+  $script:CurrentSize = $size
+  if ($null -ne $script:Visual) {
+    $script:Visual.Root.LayoutTransform = New-Object System.Windows.Media.ScaleTransform($scale, $scale)
+  }
+  if ($null -ne $window) {
+    $window.Width = [math]::Round(220 * $scale)
+    $window.Height = [math]::Round(284 * $scale)
+  }
+  if ($persist) {
+    $config.size = $size
+    Save-Config -WithSize
+  }
+  foreach ($key in $script:SizeMenuItems.Keys) {
+    foreach ($item in @($script:SizeMenuItems[$key])) {
+      if ($null -ne $item) { $item.Checked = ($key -eq $size); $item.IsChecked = ($key -eq $size) }
+    }
+  }
+  Write-PetLog "尺寸切到 $size（scale=$scale，窗口 $($window.Width)x$($window.Height)）"
 }
 
 # ---------- 与 DSH 的桥接 ----------
@@ -183,9 +236,6 @@ $window.ResizeMode = [System.Windows.ResizeMode]::NoResize
 $window.Title = '海绵宝宝桌宠'
 $window.Width = 220
 $window.Height = 284
-if ($config.scale -ne 1.0) {
-  $window.LayoutTransform = New-Object System.Windows.Media.ScaleTransform($config.scale, $config.scale)
-}
 $window.Opacity = [double]$config.opacity
 
 # 记住的位置必须校验：换显示器 / 改分辨率后旧坐标可能落在屏幕外，
@@ -211,20 +261,59 @@ if ($savedOnScreen) {
   }
 }
 $window.Content = $visual.Root
+$script:Visual = $visual
+Apply-PetSize ([string]$config.size)
 
 $window.Add_MouseLeftButtonDown({
   try { $window.DragMove() } catch { }
 })
+
+# ---------- 大小档位的菜单项（右键菜单与托盘共用同一套回调）----------
+# 点击时从 Tag 读档位，而不是在循环里闭包捕获变量——否则每一项都会用最后一个档位。
+function New-WpfSizeItem([string]$key) {
+  $item = New-Object System.Windows.Controls.MenuItem
+  $item.Header = $script:SizePresets[$key].label
+  $item.IsCheckable = $true
+  $item.IsChecked = ($script:CurrentSize -eq $key)
+  $item.Tag = $key
+  $item.Add_Click({ Apply-PetSize ([string]$args[0].Tag) $true })
+  return $item
+}
+function New-TraySizeItem([string]$key) {
+  $item = New-Object System.Windows.Forms.ToolStripMenuItem
+  $item.Text = $script:SizePresets[$key].label
+  $item.Checked = ($script:CurrentSize -eq $key)
+  $item.Tag = $key
+  $item.Add_Click({ Apply-PetSize ([string]$args[0].Tag) $true })
+  return $item
+}
+function Register-SizeMenuItem([string]$key, $item) {
+  if (-not $script:SizeMenuItems.ContainsKey($key)) { $script:SizeMenuItems[$key] = @() }
+  $script:SizeMenuItems[$key] = @($script:SizeMenuItems[$key]) + $item
+}
+
 $window.Add_MouseRightButtonUp({
   $menu = New-Object System.Windows.Controls.ContextMenu
   $items = @(
     @{ Header = '显示/隐藏桌宠'; Action = { Toggle-PetVisibility } },
     @{ Header = '免打扰（交回网页确认）'; Action = { Toggle-Dnd } },
+    @{ Header = '大小'; SizeMenu = $true },
     @{ Header = '打开 DSH 网页'; Action = { Start-Process $script:Bridge.url } },
     @{ Header = '回到右下角'; Action = { Reset-PetPosition } },
     @{ Header = '退出'; Action = { Stop-Pet } }
   )
   foreach ($item in $items) {
+    if ($item.SizeMenu) {
+      $sizeMenu = New-Object System.Windows.Controls.MenuItem
+      $sizeMenu.Header = $item.Header
+      foreach ($key in $script:SizePresets.Keys) {
+        $sizeItem = New-WpfSizeItem $key
+        Register-SizeMenuItem $key $sizeItem
+        $sizeMenu.Items.Add($sizeItem) | Out-Null
+      }
+      $menu.Items.Add($sizeMenu) | Out-Null
+      continue
+    }
     $entry = New-Object System.Windows.Controls.MenuItem
     $entry.Header = $item.Header
     $entry.Add_Click($item.Action)
@@ -270,11 +359,23 @@ if (-not $NoTray) {
   $trayItems = @(
     @{ Text = '显示/隐藏桌宠'; Action = { Toggle-PetVisibility } },
     @{ Text = '免打扰（交回网页确认）'; Action = { Toggle-Dnd } },
+    @{ Text = '大小'; SizeMenu = $true },
     @{ Text = '打开 DSH 网页'; Action = { Start-Process $script:Bridge.url } },
     @{ Text = '回到右下角'; Action = { Reset-PetPosition } },
     @{ Text = '退出'; Action = { Stop-Pet } }
   )
   foreach ($item in $trayItems) {
+    if ($item.SizeMenu) {
+      $sizeMenu = New-Object System.Windows.Forms.ToolStripMenuItem
+      $sizeMenu.Text = $item.Text
+      foreach ($key in $script:SizePresets.Keys) {
+        $sizeItem = New-TraySizeItem $key
+        Register-SizeMenuItem $key $sizeItem
+        $sizeMenu.DropDownItems.Add($sizeItem) | Out-Null
+      }
+      $trayMenu.Items.Add($sizeMenu) | Out-Null
+      continue
+    }
     $entry = New-Object System.Windows.Forms.ToolStripMenuItem
     $entry.Text = $item.Text
     $entry.Add_Click($item.Action)
@@ -289,8 +390,8 @@ function Toggle-PetVisibility {
   if ($window.IsVisible) { $window.Hide() } else { $window.Show(); $window.Topmost = $true }
 }
 function Reset-PetPosition {
-  $window.Left = [System.Windows.SystemParameters]::WorkArea.Right - ($window.Width * $config.scale) - 60
-  $window.Top = [System.Windows.SystemParameters]::WorkArea.Bottom - ($window.Height * $config.scale) - 60
+  $window.Left = [System.Windows.SystemParameters]::WorkArea.Right - $window.Width - 60
+  $window.Top = [System.Windows.SystemParameters]::WorkArea.Bottom - $window.Height - 60
 }
 function Toggle-Dnd {
   $config.dnd = -not $config.dnd
@@ -318,6 +419,7 @@ $window.Add_Closed({ Stop-Pet })
 
 $script:State = 'idle'
 $script:Tick = 0
+$script:PumpTick = 0
 $script:Blink = 0
 $script:Pending = New-Object System.Collections.ArrayList
 $script:Card = $null
@@ -566,6 +668,22 @@ $pump.Add_Tick({
       if ($null -ne $script:Card) { & $script:Card.Close; $script:Card = $null }
       $script:Pending.Clear()
       Show-Balloon 'DSH 断开了，刚才那几个确认已经失效，重连后会重新问你'
+    }
+  }
+
+  # 每 ~2.4 秒看一眼 config.json：设置页（宿主写文件）或手改档位后，桌宠这边跟着变
+  $script:PumpTick++
+  if (($script:PumpTick % 20) -eq 0) {
+    try {
+      if (Test-Path $configPath) {
+        $fresh = Get-Content $configPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($fresh.size -and ([string]$fresh.size -ne $script:CurrentSize)) {
+          Write-PetLog "配置文件里的档位变成 $($fresh.size)，跟随切换"
+          Apply-PetSize ([string]$fresh.size)
+        }
+      }
+    } catch {
+      # 读失败下次再试
     }
   }
 
