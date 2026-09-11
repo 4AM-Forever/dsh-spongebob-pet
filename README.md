@@ -75,10 +75,12 @@ dsh plugin --profile web remove dsh-spongebob-pet
 
 - 左键拖动：挪位置（退出时记住；分辨率变化导致跑到屏幕外会自动拉回右下角）
 - 右键 / 托盘：显示隐藏、免打扰、**大小（大/中/小）**、打开 DSH 网页、回到右下角、退出
+- **启动方式**：双击 `pet/SpongeBobPet.exe`（或让设置页的「启动桌宠」拉起）。这个 exe 是 Windows 子系统程序（PE Subsystem=2），用 `CreateNoWindow` 拉起 `SpongeBobPet.ps1`——**不闪 cmd 窗口，也不在任务栏留最小化控制台**。插件按 `exe → explorer+cmd → 直接 spawn powershell` 的顺序降级。
 - **大小三档**：`大` 220×284（默认）、`中` 158×204、`小` 110×142；三个入口都能改，改完 4 秒内生效，不用重启桌宠
   1. 右键菜单 / 托盘图标 → 大小
   2. 设置 → 插件 →「海绵宝宝桌宠」→ 大小
   3. 直接改 `pet/config.json` 的 `size`（桌宠每 ~2.4 秒读一次跟随）
+- **设置页的反馈节奏**：点「启动/结束」立刻变「启动中…/结束中…」，操作后 10 秒内状态轮询提到 0.8 秒（平时 3 秒）；动作按钮只显示当前可用的那个（未启动只有「启动桌宠」，运行中只有「结束桌宠」）
 - 卡片：审批＝`允许一次` / `拒绝` / `交给网页回答`；提问＝按题勾选或直接写自定义回答 + 提交
 - 卡片的压暗遮罩默认开启（`pet/config.json` 的 `dimScreen`），点不到背后窗口，逼你处理；不想这么凶就设 `false`
 
@@ -101,10 +103,11 @@ dsh-spongebob-pet/           ← 这个目录就是插件包，也是要上传�
 │  ├─ start-pet.cmd          启动器（无参数双击即可）
 │  ├─ restart-pet.cmd        先清残留再启动
 │  ├─ stop-pet.ps1           结束所有桌宠实例
-│  ├─ install-autostart.ps1  写开机自启快捷方式
+│  ├─ install-autostart.ps1  写开机自启快捷方式（指向 SpongeBobPet.exe）
+│  ├─ SpongeBobPet.exe       无控制台启动器（源：launcher/PetLauncher.cs，tools/build-launcher.ps1 编译）
 │  └─ config.json            配置
-├─ test/                     smoke.mjs（17 项逻辑自测）、pet-server.mjs（联调假 DSH）
-├─ tools/                    check-syntax（语法关）、restart-dsh（看门狗重启）、verify-live（四项硬证据）
+├─ test/                     smoke.mjs（28 项逻辑自测）、pet-server.mjs（联调假 DSH）
+├─ tools/                    check-syntax（语法关）、restart-dsh（看门狗重启）、verify-live（四项硬证据）、build-launcher（编译启动器）
 └─ docs/                     截图
 ```
 
@@ -130,7 +133,7 @@ dsh-spongebob-pet/           ← 这个目录就是插件包，也是要上传�
 
 | 项 | 方式 | 结果 |
 |---|---|---|
-| 桥接逻辑 17 项（令牌、取件、审批允许/拒绝、提问作答与非法选项、委派、超时、离线、免打扰） | `node test/smoke.mjs` | 17/17 通过 |
+| 桥接逻辑 28 项（令牌、取件、审批允许/拒绝、提问作答与非法选项、委派、超时、离线、免打扰、`/pet/ui/*` 设置页路由与切档、停止后立即报未运行） | `node test/smoke.mjs` | 28/28 通过 |
 | 审批：允许 / 拒绝 | 假 DSH 触发 → 模拟点击卡片按钮 | DSH 侧收到 `allowed-once` / `rejected` |
 | 提问：单选 + 多选 + 自定义回答 + 跳过 | UI Automation 驱动真卡片作答 | `{"answers":[{"id":"q1","selected":[]},{"id":"q2","selected":["桥接插件","文档"]},{"id":"q3","selected":[],"custom":"这是桌宠写的自定义回答"}]}`，中文无损 |
 | 委派：`Esc` / 「交给网页回答」 | 按下 Esc | 桥接侧走 `next()`，回落原生网页应答者 |

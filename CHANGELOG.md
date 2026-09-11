@@ -4,6 +4,7 @@
 
 ### 新增
 
+- **无控制台启动器 `pet/SpongeBobPet.exe`**（源 `pet/launcher/PetLauncher.cs`，`tools/build-launcher.ps1` 用系统自带 csc 编译）：Windows 子系统程序（PE Subsystem=2），以 `CreateNoWindow` 拉起 `SpongeBobPet.ps1`。以前走 `explorer → start-pet.cmd → powershell`，每次启动都会闪一下 cmd 窗口、并在任务栏留一个最小化控制台；现在双击 exe、快捷方式、设置页按钮都不再出现任何控制台窗口（实测启动前后控制台窗口数均为 0）。插件按 `exe → explorer+cmd → 直接 spawn powershell` 顺序降级。
 - **桌宠大小三档**：`大`（220×284，默认）/ `中`（158×204）/ `小`（110×142）。
   - 三个入口：右键菜单与托盘图标的「大小」子菜单、设置 → 插件 →「海绵宝宝桌宠」的三档按钮、直接改 `pet/config.json` 的 `size`。
   - 运行中切换即时生效（桌宠每 ~2.4 秒读一次配置文件），不需要重启桌宠。

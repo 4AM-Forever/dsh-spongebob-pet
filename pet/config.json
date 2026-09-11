@@ -4,7 +4,7 @@
     "sound": true,
     "dnd": false,
     "opacity": 1,
-    "size": "large",
+    "size": "medium",
     "bridgeUrl": "",
     "pollTimeout": 40,
     "position": {
