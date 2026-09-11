@@ -168,5 +168,22 @@ function New-PetVisual {
   $elements = @{}
   foreach ($name in $names) { $elements[$name] = $root.FindName($name) }
 
-  return [pscustomobject]@{ Root = $root; Elements = $elements }
+  # 外面再包一层做「吸附姿态」：贴到屏幕边缘时在这一层倾斜/翻转，里面的 BobTransform 继续管呼吸与蹦跳。
+  # 绕中心旋转，再整体平移一点让身体像是从边缘后面探出来。
+  $dockHost = New-Object System.Windows.Controls.Grid
+  $dockHost.Children.Add($root) | Out-Null
+  $dockScale = New-Object System.Windows.Media.ScaleTransform(1, 1)
+  $dockRotate = New-Object System.Windows.Media.RotateTransform(0)
+  $dockShift = New-Object System.Windows.Media.TranslateTransform(0, 0)
+  $dockGroup = New-Object System.Windows.Media.TransformGroup
+  $dockGroup.Children.Add($dockScale) | Out-Null
+  $dockGroup.Children.Add($dockRotate) | Out-Null
+  $dockGroup.Children.Add($dockShift) | Out-Null
+  $dockHost.RenderTransform = $dockGroup
+  $dockHost.RenderTransformOrigin = New-Object System.Windows.Point(0.5, 0.5)
+  $elements['DockScale'] = $dockScale
+  $elements['DockRotate'] = $dockRotate
+  $elements['DockShift'] = $dockShift
+
+  return [pscustomobject]@{ Root = $dockHost; Elements = $elements }
 }

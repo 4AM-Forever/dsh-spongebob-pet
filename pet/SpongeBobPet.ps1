@@ -66,6 +66,7 @@ $defaults = [ordered]@{
   opacity      = 1.0
   size         = 'large'
   celebrateMs  = 6000
+  dock         = ''
   bridgeUrl    = ''
   pollTimeout  = 40
   position     = @{ x = -1; y = -1 }
@@ -89,7 +90,7 @@ function Save-Config {
       foreach ($property in $disk.PSObject.Properties) { $out[$property.Name] = $property.Value }
     } catch { }
   }
-  foreach ($name in @('topmost', 'dimScreen', 'sound', 'dnd', 'opacity', 'celebrateMs', 'bridgeUrl', 'pollTimeout')) {
+  foreach ($name in @('topmost', 'dimScreen', 'sound', 'dnd', 'opacity', 'celebrateMs', 'bridgeUrl', 'pollTimeout', 'dock')) {
     if ($null -ne $config.$name) { $out[$name] = $config.$name }
   }
   if ($WithSize -or -not $out.Contains('size')) { $out['size'] = [string]$config.size }
@@ -288,22 +289,92 @@ $script:Visual = $visual
 Apply-PetSize ([string]$config.size)
 
 # 桌宠当前所在那块屏的右下角（窗口坐标是 DIU，屏幕边框是物理像素，按当前 DPI 换算）。
-# 多显示器全靠这个：不动别的屏、也不跳回主屏。
+# 多显示器全靠它：不动别的屏、也不跳回主屏。
 function Get-PetScreenCorner([double]$width, [double]$height, [double]$margin) {
+  $area = Get-PetScreenArea
+  return @{
+    Left = $area.Right - $width - $margin
+    Top  = $area.Bottom - $height - $margin
+  }
+}
+
+# 桌宠当前所在那块屏的工作区（窗口坐标系 DIU）。屏幕边框是物理像素，按当前 DPI 换算。
+function Get-PetScreenArea {
   $scale = 1.0
   $source = [System.Windows.PresentationSource]::FromVisual($window)
   if ($null -ne $source) { $scale = $source.CompositionTarget.TransformToDevice.M11 }
   if ($scale -le 0) { $scale = 1.0 }
-  $center = New-Object System.Drawing.Point([int](($window.Left + $width / 2) * $scale), [int](($window.Top + $height / 2) * $scale))
+  $center = New-Object System.Drawing.Point([int](($window.Left + $window.Width / 2) * $scale), [int](($window.Top + $window.Height / 2) * $scale))
   $area = [System.Windows.Forms.Screen]::FromPoint($center).WorkingArea
   return @{
-    Left = ($area.Right / $scale) - $width - $margin
-    Top  = ($area.Bottom / $scale) - $height - $margin
+    Left   = $area.Left / $scale
+    Top    = $area.Top / $scale
+    Right  = $area.Right / $scale
+    Bottom = $area.Bottom / $scale
   }
+}
+
+# 吸附姿态：贴在屏幕边缘时像趴在墙角探头看我们 —— 整体倾斜，身体往边缘外挪一点，边缘那侧微微藏起来
+$script:DockPoses = @{
+  left   = @{ Rotate = 16;  ShiftX = -16; ShiftY = 6;   Out = -18 }
+  right  = @{ Rotate = -16; ShiftX = 16;  ShiftY = 6;   Out = 18 }
+  top    = @{ Rotate = -7;  ShiftX = 0;   ShiftY = -14; Out = -16 }
+  bottom = @{ Rotate = 0;   ShiftX = 0;   ShiftY = 4;   Out = 6 }
+}
+
+# 应用/取消吸附：$edge 为空表示离开所有边缘
+function Apply-PetDock([string]$edge, $area = $null) {
+  if ($null -eq $area) { $area = Get-PetScreenArea }
+  $e = $script:Visual.Elements
+  if ([string]::IsNullOrEmpty($edge) -or -not $script:DockPoses.ContainsKey($edge)) {
+    $e.DockRotate.Angle = 0
+    $e.DockScale.ScaleX = 1
+    $e.DockScale.ScaleY = 1
+    $e.DockShift.X = 0
+    $e.DockShift.Y = 0
+    if ($script:Dock -ne '') {
+      $script:Dock = ''
+      $config.dock = ''
+      Save-Config
+      Write-PetLog '离开屏幕边缘，恢复正常站姿'
+    }
+    return
+  }
+  $pose = $script:DockPoses[$edge]
+  $e.DockRotate.Angle = $pose.Rotate
+  $e.DockShift.X = $pose.ShiftX
+  $e.DockShift.Y = $pose.ShiftY
+  switch ($edge) {
+    'left'   { $window.Left = $area.Left + $pose.Out }
+    'right'  { $window.Left = $area.Right - $window.Width + $pose.Out }
+    'top'    { $window.Top = $area.Top + $pose.Out }
+    'bottom' { $window.Top = $area.Bottom - $window.Height + $pose.Out }
+  }
+  if ($script:Dock -ne $edge) {
+    $label = @{ left = '左边缘'; right = '右边缘'; top = '上边缘'; bottom = '下边缘' }[$edge]
+    $script:Dock = $edge
+    $config.dock = $edge
+    Save-Config
+    Write-PetLog "吸附到屏幕$label，换成趴墙探头姿态（倾斜 $($pose.Rotate)°）"
+  }
+}
+
+# 拖动松手后判定要不要吸附：离边缘 18 DIU 以内就算贴上
+function Test-PetDockSnap {
+  $area = Get-PetScreenArea
+  $threshold = 18
+  $edge = ''
+  if ($window.Left -le ($area.Left + $threshold)) { $edge = 'left' }
+  elseif (($window.Left + $window.Width) -ge ($area.Right - $threshold)) { $edge = 'right' }
+  elseif ($window.Top -le ($area.Top + $threshold)) { $edge = 'top' }
+  elseif (($window.Top + $window.Height) -ge ($area.Bottom - $threshold)) { $edge = 'bottom' }
+  Apply-PetDock $edge $area
 }
 
 # 自己实现拖动：WPF 的 DragMove() 会把 MouseUp 吃掉，没法区分「点一下」和「拖一段」。
 # 点一下（位移 < 4px）＝开关「进行中会话」面板；拖一段＝挪位置（退出时记住坐标）。
+# 松手时贴着屏幕边缘就吸附上去，换成趴墙探头姿态。
+$script:Dock = ''
 $script:DragActive = $false
 $script:DragMoved = $false
 $script:DragScreenStart = $null
@@ -314,6 +385,13 @@ $window.Add_MouseLeftButtonDown({
   $script:DragMoved = $false
   $script:DragScreenStart = [System.Windows.Forms.Cursor]::Position
   $script:DragWindowStart = @{ Left = $window.Left; Top = $window.Top }
+  # 一旦开始拖，先把吸附姿态摆正（松手时再按落点决定吸附还是解除）
+  if ($script:Dock -ne '') {
+    $moving = $script:Visual.Elements
+    $moving.DockRotate.Angle = 0
+    $moving.DockShift.X = 0
+    $moving.DockShift.Y = 0
+  }
   $window.CaptureMouse() | Out-Null
 })
 $window.Add_MouseMove({
@@ -341,7 +419,7 @@ $window.Add_MouseLeftButtonUp({
   $script:DragActive = $false
   $window.ReleaseMouseCapture()
   Write-PetLog "桌宠被点击：位移判定=$(if ($script:DragMoved) { '拖动' } else { '点击' })"
-  if (-not $script:DragMoved) { Toggle-SessionsPanel $config }
+  if (-not $script:DragMoved) { Toggle-SessionsPanel $config } else { Test-PetDockSnap }
 })
 
 # ---------- 大小档位的菜单项（右键菜单与托盘共用同一套回调）----------
@@ -735,6 +813,12 @@ $animation.Add_Tick({
     }
   }
 
+  # 吸附在屏幕边缘时，像挂在墙上那样慢慢晃；探头看人的感觉靠这个晃 + 固定倾斜角
+  if ($script:Dock -ne '') {
+    $pose = $script:DockPoses[$script:Dock]
+    if ($null -ne $pose) { $e.DockRotate.Angle = $pose.Rotate + [math]::Sin($phase * 0.75) * 3 }
+  }
+
   # 显示器分辨率会被远程会话改来改去，窗口一旦跑出可视范围就往回拉一点。
   # 判定基准必须是「整个虚拟桌面」（所有屏幕的并集）：SystemParameters.WorkArea 只是主屏工作区，
   # 拿它判定会把摆在副屏的桌宠当成跑出屏幕，每隔几秒拽回主屏（皇上实测就是这么烦）。
@@ -889,6 +973,11 @@ $pump.Start()
 
 $window.Show() | Out-Null
 Write-PetLog ("窗口已显示：({0},{1}) {2}x{3}  topmost={4}" -f [int]$window.Left, [int]$window.Top, [int]$window.Width, [int]$window.Height, $window.Topmost)
+# 上次是吸在边缘上的，就接着吸回去（姿态与位置一起恢复）
+if (-not [string]::IsNullOrEmpty([string]$config.dock)) {
+  Apply-PetDock ([string]$config.dock)
+  Write-PetLog "按记忆恢复吸附姿态：$($config.dock)"
+}
 Read-Handshake | Out-Null
 Update-PetState
 Set-PetBubble '海绵宝宝待命中'

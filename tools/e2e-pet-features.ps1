@@ -308,16 +308,23 @@ try {
   $startY = [int]($dragRect.Y + $dragRect.Height / 2)
 
   # 合成拖动：按下 → 真光标挪一段（桌宠按光标位移判定）→ 补一条移动消息 → 抬键；被吞掉就重试。
+  # 每次调用都重新取窗口位置：桌宠可能刚吸附到边缘、或已经被挪到别的屏上。
   function Invoke-PetDrag([int]$dx, [int]$dy) {
-    $cx = [int]($dragRect.Width / 2)
-    $cy = [int]($dragRect.Height / 2)
-    Move-CursorTo $startX $startY | Out-Null
-    [E2E.Win]::ButtonDown($dragHandle, [int]$dragRect.Width, [int]$dragRect.Height)
+    $win = Find-Window '海绵宝宝桌宠' $petProcess.Id
+    if ($null -eq $win) { Step '拖不动：找不到桌宠窗口'; return }
+    $r = $win.Current.BoundingRectangle
+    $h = [IntPtr]$win.Current.NativeWindowHandle
+    $pressX = [int]($r.X + $r.Width / 2)
+    $pressY = [int]($r.Y + $r.Height / 2)
+    $cx = [int]($r.Width / 2)
+    $cy = [int]($r.Height / 2)
+    Move-CursorTo $pressX $pressY | Out-Null
+    [E2E.Win]::ButtonDown($h, [int]$r.Width, [int]$r.Height)
     Start-Sleep -Milliseconds 150
-    Move-CursorTo ($startX + $dx) ($startY + $dy) | Out-Null
-    [E2E.Win]::MouseMoveAt($dragHandle, $cx + $dx, $cy + $dy)
+    Move-CursorTo ($pressX + $dx) ($pressY + $dy) | Out-Null
+    [E2E.Win]::MouseMoveAt($h, $cx + $dx, $cy + $dy)
     Start-Sleep -Milliseconds 150
-    [E2E.Win]::ButtonUp($dragHandle, [int]$dragRect.Width, [int]$dragRect.Height)
+    [E2E.Win]::ButtonUp($h, [int]$r.Width, [int]$r.Height)
   }
 
   $dragged = $false
@@ -334,7 +341,27 @@ try {
   # 拖动期间气泡让开、松手后自己回来。这一步必须紧跟着拖完就查：晚了气泡早回来了，就等不到「新的一次」
   Check '松手后气泡自己回来' (Wait-LogAgain '气泡：多线程烧脑中（2）')
 
-  # ---- 5. 多显示器：摆在副屏不能被拽回主屏 ----
+  # ---- 5. 贴边吸附：拖到屏幕左缘松手，要吸上去并换成趴墙探头姿态 ----
+  $petScreen = [System.Windows.Forms.Screen]::FromPoint(
+    (New-Object System.Drawing.Point([int]($dragRect.X + $dragRect.Width / 2), [int]($dragRect.Y + $dragRect.Height / 2))))
+  $screenArea = $petScreen.WorkingArea
+  $edgeDragDx = [int]($screenArea.Left + 10 - ($dragRect.X + $dragRect.Width / 2))
+  Invoke-PetDrag $edgeDragDx 0
+  Check '拖到屏幕左缘 → 吸附并换成趴墙探头姿态' (Wait-LogText '吸附到屏幕左边缘' 6)
+  Start-Sleep -Milliseconds 700
+  $dockedRect = (Find-Window '海绵宝宝桌宠' $petProcess.Id).Current.BoundingRectangle
+  Step ("吸附后窗口 X={0}（屏幕左缘 {1}）" -f [int]$dockedRect.X, $screenArea.Left)
+  Check '吸附后贴在屏幕左缘上（略微藏进边缘）' ([math]::Abs($dockedRect.X - $screenArea.Left) -le 24)
+  $dockConfig = Get-Content (Join-Path $work 'config.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+  Check '吸附状态写进配置（重启后接着吸）' ([string]$dockConfig.dock -eq 'left')
+
+  # 再拖走：应当解除吸附、恢复站姿
+  Invoke-PetDrag 260 60
+  Check '拖离边缘 → 解除吸附、恢复正常站姿' (Wait-LogText '离开屏幕边缘，恢复正常站姿' 6)
+  $undockConfig = Get-Content (Join-Path $work 'config.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+  Check '解除吸附也写进配置' ([string]$undockConfig.dock -eq '')
+
+  # ---- 6. 多显示器：摆在副屏不能被拽回主屏 ----
   # 回归：自动回收判定原来用 SystemParameters.WorkArea（只是主屏工作区），
   # 摆在副屏的桌宠每 5 秒被当成「跑出屏幕」拽回主屏（皇上实测就是这么烦）。
   $otherScreens = @([System.Windows.Forms.Screen]::AllScreens | Where-Object { -not $_.Primary })
@@ -363,7 +390,7 @@ try {
     )
   }
 
-  # ---- 6. 任务完成：庆祝（有过程，不是闪一下） ----
+  # ---- 7. 任务完成：庆祝（有过程，不是闪一下） ----
   Send-Stub '/stub/celebrate' @{ title = '任务A'; durationMs = 12000 } | Out-Null
   Check '桥接推 celebrate → 桌宠开始庆祝' (Wait-LogText '任务完成，庆祝 4000ms（任务A）')
   Check '庆祝头一段先喊一嗓子' (Wait-LogText '气泡：「任务A」搞定，收工～')
