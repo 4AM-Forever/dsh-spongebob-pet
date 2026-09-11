@@ -65,7 +65,7 @@ $defaults = [ordered]@{
   dnd          = $false
   opacity      = 1.0
   size         = 'large'
-  celebrateMs  = 3200
+  celebrateMs  = 6000
   bridgeUrl    = ''
   pollTimeout  = 40
   position     = @{ x = -1; y = -1 }
@@ -584,16 +584,23 @@ function Update-PetState {
     Set-PetBubble 'DSH 没连上，等等我…'
     return
   }
-  # 庆祝优先于一切：干完活的 3 秒里专心跳舞，气泡让位给派对帽
+  # 庆祝优先于一切：干完活的这几秒专心跳舞，气泡只在头一段喊一嗓子
   if ($null -ne $script:CelebrateUntil -and (Get-Date) -lt $script:CelebrateUntil) {
     if ($script:State -ne 'celebrate') { $script:State = 'celebrate'; Set-PetExpression 'celebrate' }
-    Set-PetBubble ''
+    if ($null -eq $script:CelebrateStart) { $script:CelebrateStart = Get-Date }
+    $span = [double]$config.celebrateMs
+    if ($span -le 0) { $span = 1 }
+    $early = ((Get-Date) - $script:CelebrateStart).TotalMilliseconds -lt ($span * 0.35)
+    $who = [string]$script:CelebrateTitle
+    Set-PetBubble $(if (-not $early) { '' } elseif ($who -ne '') { "「$who」搞定，收工～" } else { '搞定，收工～' })
     return
   }
   if ($null -ne $script:CelebrateUntil) {
     $script:CelebrateUntil = $null
+    $script:CelebrateStart = $null
     Set-PetExpression 'idle'
     $script:State = 'idle'
+    Write-PetLog '庆祝结束，回到待命'
   }
   if ($script:Pending.Count -gt 0) {
     if ($script:State -ne 'asking') { $script:State = 'asking'; Set-PetExpression 'asking' }
@@ -625,6 +632,8 @@ function Update-PetState {
 
 $script:ServerState = 'idle'
 $script:BubbleText = ''
+$script:CelebrateStart = $null
+$script:CelebrateTitle = ''
 
 $animation = New-Object System.Windows.Threading.DispatcherTimer
 $animation.Interval = [TimeSpan]::FromMilliseconds(90)
@@ -636,10 +645,38 @@ $animation.Add_Tick({
 
   switch ($script:State) {
     'celebrate' {
-      # 蹦得更高、双手举高挥、彩纸往下飘
-      $e.BobTransform.Y = [math]::Round(-[math]::Abs([math]::Sin($phase * 2.2)) * 10, 1)
-      $e.LeftArmRotate.Angle = -55 + [math]::Sin($phase * 3.4) * 22
-      $e.RightArmRotate.Angle = 55 - [math]::Sin($phase * 3.4 + 0.6) * 22
+      # 庆祝是有过程的：起势 → 撒花蹦跳 → 左右摇摆 → 收尾谢幕，不是闪一下
+      if ($null -eq $script:CelebrateStart) { $script:CelebrateStart = Get-Date }
+      $span = [double]$config.celebrateMs
+      if ($span -le 0) { $span = 1 }
+      $progress = [math]::Min(1.0, [math]::Max(0.0, ((Get-Date) - $script:CelebrateStart).TotalMilliseconds / $span))
+      # 帽子与彩纸跟着节奏进出场：起势时稀稀拉拉，撒花时漫天，收尾时落干净
+      $e.Confetti.Opacity = if ($progress -lt 0.15) { 0.35 } elseif ($progress -gt 0.82) { [math]::Max(0.0, (1.0 - $progress) / 0.18) } else { 1.0 }
+      $e.PartyHat.Opacity = if ($progress -lt 0.12) { $progress / 0.12 } elseif ($progress -gt 0.9) { [math]::Max(0.0, (1.0 - $progress) / 0.1) } else { 1.0 }
+      if ($progress -lt 0.18) {
+        # 起势：先蹲一下再窜起来，双手一路举高
+        $rise = $progress / 0.18
+        $e.BobTransform.Y = [math]::Round((1 - $rise) * 6 - $rise * 8, 1)
+        $e.LeftArmRotate.Angle = -20 - $rise * 55
+        $e.RightArmRotate.Angle = 20 + $rise * 55
+      } elseif ($progress -lt 0.62) {
+        # 撒花：蹦得最高、手臂挥得最欢
+        $e.BobTransform.Y = [math]::Round(-[math]::Abs([math]::Sin($phase * 2.2)) * 12, 1)
+        $e.LeftArmRotate.Angle = -58 + [math]::Sin($phase * 3.4) * 24
+        $e.RightArmRotate.Angle = 58 - [math]::Sin($phase * 3.4 + 0.6) * 24
+      } elseif ($progress -lt 0.86) {
+        # 摇摆：幅度收一点，左右晃着高兴
+        $e.BobTransform.Y = [math]::Round([math]::Sin($phase * 1.4) * 5, 1)
+        $e.LeftArmRotate.Angle = -40 + [math]::Sin($phase * 1.8) * 26
+        $e.RightArmRotate.Angle = 40 - [math]::Sin($phase * 1.8) * 26
+      } else {
+        # 收尾：手臂放下、轻轻晃两下收工
+        $calm = ($progress - 0.86) / 0.14
+        $e.BobTransform.Y = [math]::Round([math]::Sin($phase * 0.9) * 3 * (1 - $calm), 1)
+        $e.LeftArmRotate.Angle = -14 * (1 - $calm)
+        $e.RightArmRotate.Angle = 14 * (1 - $calm)
+      }
+      # 彩纸飘落（贯穿全程）
       $fall = ($script:Tick * 7) % 120
       $e.ConfTr1.Y = $fall; $e.ConfTr2.Y = ($fall + 40) % 120
       $e.ConfTr3.Y = ($fall + 70) % 120; $e.ConfTr4.Y = ($fall + 20) % 120
@@ -766,7 +803,9 @@ $pump.Add_Tick({
     } elseif ($item.type -eq 'event') {
       if ($item.data.type -eq 'session') { $script:ServerState = [string]$item.data.data.state }
       if ($item.data.type -eq 'celebrate') {
-        # 桥接判定「一个够长的任务干完了」→ 跳一小段
+        # 桥接判定「一个够长的任务干完了」→ 走一段有过程的庆祝
+        $script:CelebrateStart = Get-Date
+        $script:CelebrateTitle = [string]$item.data.data.title
         $script:CelebrateUntil = (Get-Date).AddMilliseconds([int]$config.celebrateMs)
         if ($config.sound) { [System.Media.SystemSounds]::Asterisk.Play() }
         Write-PetLog "任务完成，庆祝 $($config.celebrateMs)ms（$($item.data.data.title)）"

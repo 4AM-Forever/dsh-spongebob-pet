@@ -58,13 +58,25 @@ $config = [ordered]@{
   dnd         = $false
   opacity     = 1.0
   size        = 'small'
-  celebrateMs = 1500
+  celebrateMs = 4000
   bridgeUrl   = "http://127.0.0.1:$port"
   pollTimeout = 30
   position    = @{ x = 320; y = 260 }
 }
 $noBom = New-Object System.Text.UTF8Encoding $false
 [System.IO.File]::WriteAllText((Join-Path $work 'config.json'), ($config | ConvertTo-Json -Depth 5), $noBom)
+
+# 看门狗：脚本万一被强杀（finally 跑不到），5 分钟后也把这个临时副本收掉。
+# 桌宠是摆在桌面上的东西，绝不能留一只测试副本赖在用户屏幕上。
+$watchdogPath = Join-Path $tmp 'watchdog.ps1'
+$watchdog = @"
+Start-Sleep -Seconds 300
+Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
+  Where-Object { `$_.CommandLine -like '*$work*SpongeBobPet.ps1*' } |
+  ForEach-Object { Stop-Process -Id `$_.ProcessId -Force -ErrorAction SilentlyContinue }
+"@
+[System.IO.File]::WriteAllText($watchdogPath, $watchdog, $noBom)
+Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'RemoteSigned', '-File', $watchdogPath) | Out-Null
 
 $savedDshHome = $env:DSH_HOME
 $env:DSH_HOME = $tmp
@@ -315,18 +327,31 @@ try {
   }
   Check '一开始挪动，会话面板就自动收起' ([E2E.Win]::CountVisibleWindows([uint32]$petProcess.Id) -eq $windowsBefore)
 
-  # ---- 5. 任务完成：庆祝 ----
+  # ---- 5. 任务完成：庆祝（有过程，不是闪一下） ----
   # 拖动时气泡被让开了，先等它自己回来，再推庆祝——否则「庆祝时气泡让位」是白捡的
   Check '松手后气泡自己回来' (Wait-LogAgain '气泡：多线程烧脑中（2）')
   Send-Stub '/stub/celebrate' @{ title = '任务A'; durationMs = 12000 } | Out-Null
-  Check '桥接推 celebrate → 桌宠进入庆祝' (Wait-LogText '任务完成，庆祝 1500ms（任务A）')
-  # 「气泡收起」别的路径也会打（断线、状态归位），必须确认它出现在庆祝那一行之后
+  Check '桥接推 celebrate → 桌宠开始庆祝' (Wait-LogText '任务完成，庆祝 4000ms（任务A）')
+  Check '庆祝头一段先喊一嗓子' (Wait-LogText '气泡：「任务A」搞定，收工～')
+  # 气泡是到中段（35%）才让给派对帽的，所以要等新的一次「气泡收起」，不能立刻查
+  $bubbleYielded = Wait-LogAgain '气泡收起' 6
   $afterLog = Get-PetLogText
   $celebrateAt = $afterLog.IndexOf('任务完成，庆祝')
   $bubbleClearedAt = $afterLog.LastIndexOf('气泡收起')
-  Check '庆祝期间气泡让位' ($celebrateAt -ge 0 -and $bubbleClearedAt -gt $celebrateAt)
+  Check '庆祝中段气泡让位给派对帽' ($bubbleYielded -and $celebrateAt -ge 0 -and $bubbleClearedAt -gt $celebrateAt)
+  Check '庆祝走完全程并收尾' (Wait-LogText '庆祝结束，回到待命' 20)
 
-  # ---- 5. 全程无异常 ----
+  # 起止两行日志的时间差＝庆祝实际时长，必须接近配置值（有过程，不是闪一下）
+  $finalLog = Get-PetLogText
+  $stamp = @($finalLog -split "`n" | Where-Object { $_.Contains('任务完成，庆祝') -or $_.Contains('庆祝结束，回到待命') })
+  $elapsedMs = -1
+  if ($stamp.Count -ge 2) {
+    $parse = { param($line) [datetime]::ParseExact($line.Substring(0, 23), 'yyyy-MM-dd HH:mm:ss.fff', $null) }
+    $elapsedMs = ((& $parse $stamp[-1]) - (& $parse $stamp[-2])).TotalMilliseconds
+  }
+  Check ("庆祝实际时长接近 4000ms（实测 {0:N0}ms）" -f $elapsedMs) ($elapsedMs -ge 3200 -and $elapsedMs -le 7000)
+
+  # ---- 6. 全程无异常 ----
   $log = Get-PetLogText
   Check '运行期没有未捕获异常' (-not ($log.Contains('UI 线程未捕获异常') -or $log.Contains('FATAL')))
   $script:failedEarly = @($checks | Where-Object { -not $_.ok })
