@@ -14,8 +14,16 @@ function Write-PetLog([string]$message) {
     "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff') [pid $PID] $message" | Out-File -FilePath $script:LogPath -Append -Encoding utf8
   } catch { }
 }
+$script:AppRunning = $false
 trap {
-  Write-PetLog ("FATAL: " + $_.Exception.GetType().Name + ': ' + $_.Exception.Message + ' @ ' + $_.InvocationInfo.PositionMessage)
+  # 运行期里单个 UI 异常不该把桌宠整个带走（右击菜单那次就是这么死的）：
+  # 起来之后的异常只记日志、继续跑；启动阶段失败才退出，免得留个看不见的僵尸进程。
+  $message = $_.Exception.GetType().Name + ': ' + $_.Exception.Message + ' @ ' + $_.InvocationInfo.PositionMessage
+  if ($script:AppRunning) {
+    Write-PetLog "运行中异常（已忽略，桌宠继续跑）：$message"
+    continue
+  }
+  Write-PetLog "FATAL: $message"
   exit 1
 }
 
@@ -108,8 +116,16 @@ function Apply-PetSize([string]$size, [bool]$persist = $false) {
     Save-Config -WithSize
   }
   foreach ($key in $script:SizeMenuItems.Keys) {
+    $active = ($key -eq $size)
     foreach ($item in @($script:SizeMenuItems[$key])) {
-      if ($null -ne $item) { $item.Checked = ($key -eq $size); $item.IsChecked = ($key -eq $size) }
+      if ($null -eq $item) { continue }
+      # 两种菜单的选中属性名不同：WPF MenuItem 是 IsChecked，WinForms ToolStripMenuItem 只有 Checked。
+      # 之前两个都设，托盘项上找不到 IsChecked 直接抛异常（脚本级 trap 会把桌宠带走）。
+      if ($item -is [System.Windows.Controls.MenuItem]) {
+        $item.IsChecked = $active
+      } elseif ($item -is [System.Windows.Forms.ToolStripMenuItem]) {
+        $item.Checked = $active
+      }
     }
   }
   Write-PetLog "尺寸切到 $size（scale=$scale，窗口 $($window.Width)x$($window.Height)）"
@@ -705,8 +721,13 @@ Set-PetBubble '海绵宝宝待命中'
 $application = New-Object System.Windows.Application
 $application.ShutdownMode = [System.Windows.ShutdownMode]::OnExplicitShutdown
 $application.Add_DispatcherUnhandledException({
-  $err = $args[1].Exception
-  Write-PetLog ("UI 线程未捕获异常：" + $err.GetType().Name + ': ' + $err.Message)
+  $eventArgs = $args[1]
+  $err = $eventArgs.Exception
+  Write-PetLog ("UI 线程未捕获异常（已吃掉，桌宠继续跑）：" + $err.GetType().Name + ': ' + $err.Message)
+  # 标记已处理：单个事件处理器的异常不该结束整个应用
+  $eventArgs.Handled = $true
 })
+$script:AppRunning = $true
 $application.Run() | Out-Null
+$script:AppRunning = $false
 Write-PetLog 'Application.Run 退出，脚本结束'

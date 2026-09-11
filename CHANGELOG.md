@@ -13,6 +13,7 @@
 
 ### 修复
 
+- **右击桌宠切档位会把桌宠关掉**（从设置页切却没事）：切档位要同步两个菜单的选中态——右键菜单是 WPF `MenuItem`（属性 `IsChecked`），托盘菜单是 WinForms `ToolStripMenuItem`（只有 `Checked`）。代码对两者都设 `IsChecked`，WinForms 项抛 `RuntimeException: 在此对象上找不到属性"IsChecked"`，脚本级 `trap` 随即 `exit 1`，桌宠进程被杀（`pet.log` 里留下 `FATAL`）。修法：按控件类型各设各的属性。并做两处加固：`trap` 改为「应用跑起来之后异常只记日志、继续运行」（只有启动阶段失败才退出），`DispatcherUnhandledException` 里标记 `Handled = true` —— 单个 UI 异常不再能把桌宠整个带走。已用「右击 → 大小 → 小」真实路径验证：桌宠存活、窗口 158×204 → 110×142、日志无异常。
 - **设置页点档位后高亮不动、像是没绑定**：`/pet/ui/state` 在「桌宠不是插件拉起、靠长轮询心跳在线」时会抛 `TypeError`（`petRunning()` 认了心跳，`petPid` 却仍取 `petChild.pid`，此时 `petChild` 是 `null`），webserver 把 handler 抛错答成 **400** → 设置页刷新永远失败 → 状态与高亮停在旧值；而写入路由 `/pet/ui/size` 是好的，所以桌宠确实会变、界面却不变。修法：拆出 `petChildAlive()`，只有真正由插件拉起的子进程才取 pid（`stopPet`、`/pet/ui/state`、握手文件 diagnostics 三处同错一并修）。
   - 设置页加**乐观高亮**：点下去立刻选中该档并提示「已切到「小」，等桌宠跟随…」，服务端确认后自动让位给真实值；`petPid` 为 `null` 时状态行不再显示「pid null」。
   - `test/smoke.mjs` 增加 7 条 `/pet/ui/*` 回归用例（含「桌宠靠心跳在线时 state 必须 200」「petPid 允许为 null」「切档后立刻反映」「非法档位 400」），测试用配置路径改为可注入，不再动仓库里的 `pet/config.json`。
