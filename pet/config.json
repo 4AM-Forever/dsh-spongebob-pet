@@ -1,14 +1,14 @@
 {
-    "topmost":  true,
-    "dimScreen":  true,
-    "sound":  true,
-    "dnd":  false,
-    "opacity":  1.0,
-    "size":  "small",
-    "bridgeUrl":  "",
-    "pollTimeout":  40,
-    "position":  {
-                     "y":  374,
-                     "x":  1639
-                 }
+    "topmost": true,
+    "dimScreen": true,
+    "sound": true,
+    "dnd": false,
+    "opacity": 1,
+    "size": "large",
+    "bridgeUrl": "",
+    "pollTimeout": 40,
+    "position": {
+        "y": 374,
+        "x": 1639
+    }
 }

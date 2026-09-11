@@ -3,13 +3,16 @@
  * 运行：node test/smoke.mjs   （DSH_HOME 指向临时目录，不碰真实握手文件）
  */
 import { createServer } from 'node:http'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import assert from 'node:assert/strict'
 
 const home = await mkdtemp(join(tmpdir(), 'pet-smoke-'))
 process.env.DSH_HOME = home
+// 停止脚本换成空操作：测试绝不能去杀皇上正在跑的桌宠
+const noopStop = join(home, 'noop-stop.ps1')
+await writeFile(noopStop, '# noop\n', 'utf8')
 
 const { apply } = await import('../lib/index.js')
 
@@ -56,6 +59,7 @@ apply(ctx, {
   questionTimeoutMs: 3000,
   // 指向临时文件：测试不碰仓库里那份真配置
   petConfig: join(home, 'pet-config.json'),
+  petStopScript: noopStop,
 })
 
 const server = createServer((req, res) => {
@@ -210,6 +214,20 @@ const badSize = await fetch(`${base}/pet/ui/size`, {
   body: JSON.stringify({ size: 'huge' }),
 })
 check('非法档位被拒（400）', badSize.status === 400)
+
+// 10. 关闭桌宠必须「立刻」反映
+// 回归：心跳窗口 30 秒 —— 桌宠被杀掉后 petOnline() 还当真，设置页要等半分钟才变「未运行」。
+await petOnline()
+const beforeStop = await (await fetch(`${base}/pet/ui/state`, { headers: { 'sec-fetch-site': 'same-origin' } })).json()
+check('停止前报告为运行中', beforeStop.petRunning === true)
+const stopUi = await fetch(`${base}/pet/ui/stop`, {
+  method: 'POST',
+  headers: { origin: `http://127.0.0.1:${server.address().port}` },
+})
+check('POST /pet/ui/stop 返回 200', stopUi.status === 200)
+const afterStop = await (await fetch(`${base}/pet/ui/state`, { headers: { 'sec-fetch-site': 'same-origin' } })).json()
+check('停止后立刻报告未运行（不等心跳过期）', afterStop.petRunning === false)
+check('停止后 petStarting 为 false', afterStop.petStarting === false)
 
 server.close()
 await rm(home, { recursive: true, force: true })
