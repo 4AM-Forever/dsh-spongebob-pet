@@ -29,8 +29,11 @@ trap {
 
 Write-PetLog "启动：exe=$([System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName) 参数=$($MyInvocation.Line)"
 
-# 单实例：重复启动只会多出一只抢同一批确认的桌宠
-$script:Singleton = New-Object System.Threading.Mutex($false, 'dsh-spongebob-pet-singleton')
+# 单实例：重复启动只会多出一只抢同一批确认的桌宠。
+# 锁名可用 SBP_SINGLETON 覆盖——e2e 脚本要让「临时副本」和真桌宠同时跑（tools\e2e-pet-features.ps1）。
+$singletonName = 'dsh-spongebob-pet-singleton'
+if ($env:SBP_SINGLETON) { $singletonName = [string]$env:SBP_SINGLETON }
+$script:Singleton = New-Object System.Threading.Mutex($false, $singletonName)
 if (-not $script:Singleton.WaitOne(0)) {
   Write-PetLog '已有实例在跑，本次启动退出'
   Write-Host '桌宠已经在跑了，这次启动忽略。'
@@ -41,6 +44,7 @@ Write-PetLog '拿到单实例锁'
 . (Join-Path $script:Root 'lib\Ui.ps1')
 . (Join-Path $script:Root 'lib\Art.ps1')
 . (Join-Path $script:Root 'lib\Card.ps1')
+. (Join-Path $script:Root 'lib\Sessions.ps1')
 Write-PetLog '依赖库加载完成'
 
 # ---------- 配置 ----------
@@ -61,6 +65,7 @@ $defaults = [ordered]@{
   dnd          = $false
   opacity      = 1.0
   size         = 'large'
+  celebrateMs  = 3200
   bridgeUrl    = ''
   pollTimeout  = 40
   position     = @{ x = -1; y = -1 }
@@ -84,7 +89,7 @@ function Save-Config {
       foreach ($property in $disk.PSObject.Properties) { $out[$property.Name] = $property.Value }
     } catch { }
   }
-  foreach ($name in @('topmost', 'dimScreen', 'sound', 'dnd', 'opacity', 'bridgeUrl', 'pollTimeout')) {
+  foreach ($name in @('topmost', 'dimScreen', 'sound', 'dnd', 'opacity', 'celebrateMs', 'bridgeUrl', 'pollTimeout')) {
     if ($null -ne $config.$name) { $out[$name] = $config.$name }
   }
   if ($WithSize -or -not $out.Contains('size')) { $out['size'] = [string]$config.size }
@@ -282,8 +287,42 @@ $window.Content = $visual.Root
 $script:Visual = $visual
 Apply-PetSize ([string]$config.size)
 
+# 自己实现拖动：WPF 的 DragMove() 会把 MouseUp 吃掉，没法区分「点一下」和「拖一段」。
+# 点一下（位移 < 4px）＝开关「进行中会话」面板；拖一段＝挪位置（退出时记住坐标）。
+$script:DragActive = $false
+$script:DragMoved = $false
+$script:DragScreenStart = $null
+$script:DragWindowStart = $null
+
 $window.Add_MouseLeftButtonDown({
-  try { $window.DragMove() } catch { }
+  $script:DragActive = $true
+  $script:DragMoved = $false
+  $script:DragScreenStart = [System.Windows.Forms.Cursor]::Position
+  $script:DragWindowStart = @{ Left = $window.Left; Top = $window.Top }
+  $window.CaptureMouse() | Out-Null
+})
+$window.Add_MouseMove({
+  if (-not $script:DragActive) { return }
+  $now = [System.Windows.Forms.Cursor]::Position
+  $dx = $now.X - $script:DragScreenStart.X
+  $dy = $now.Y - $script:DragScreenStart.Y
+  if ((-not $script:DragMoved) -and ([math]::Abs($dx) -gt 4 -or [math]::Abs($dy) -gt 4)) { $script:DragMoved = $true }
+  if ($script:DragMoved) {
+    # 光标位置是物理像素，窗口坐标是 DIU，按当前 DPI 换算
+    $scale = 1.0
+    $source = [System.Windows.PresentationSource]::FromVisual($window)
+    if ($null -ne $source) { $scale = $source.CompositionTarget.TransformToDevice.M11 }
+    if ($scale -le 0) { $scale = 1.0 }
+    $window.Left = $script:DragWindowStart.Left + ($dx / $scale)
+    $window.Top = $script:DragWindowStart.Top + ($dy / $scale)
+  }
+})
+$window.Add_MouseLeftButtonUp({
+  if (-not $script:DragActive) { return }
+  $script:DragActive = $false
+  $window.ReleaseMouseCapture()
+  Write-PetLog "桌宠被点击：位移判定=$(if ($script:DragMoved) { '拖动' } else { '点击' })"
+  if (-not $script:DragMoved) { Toggle-SessionsPanel $config }
 })
 
 # ---------- 大小档位的菜单项（右键菜单与托盘共用同一套回调）----------
@@ -443,13 +482,23 @@ $script:Pending = New-Object System.Collections.ArrayList
 $script:Card = $null
 $script:DisconnectedAt = $null
 $script:DndPushed = $false
+# 庆祝：干完一个任务后短时跳舞；并记录最近一次会话快照给「进行中会话」面板用
+$script:CelebrateUntil = $null
+$script:LastSessions = @()
+$script:BusyCount = 0
+$script:PanelTick = 0
 
 function Set-PetBubble([string]$text) {
   $elements = $script:Visual.Elements
   if ([string]::IsNullOrEmpty($text)) {
+    if (-not [string]::IsNullOrEmpty($script:BubbleText)) { Write-PetLog '气泡收起' }
+    $script:BubbleText = ''
     Set-Visible $elements.StatusBubble $false
     return
   }
+  # 只在文案变化时记一行：排障靠日志，用户看不到控制台
+  if ($text -ne $script:BubbleText) { Write-PetLog "气泡：$text" }
+  $script:BubbleText = $text
   $elements.StatusText.Text = $text
   Set-Visible $elements.StatusBubble $true
 }
@@ -463,6 +512,7 @@ function Reset-PetFace {
   Set-Visible $e.MouthOpen $false; Set-Visible $e.MouthO $false; Set-Visible $e.MouthWave $false
   Set-Visible $e.SweatL $false; Set-Visible $e.SweatR $false
   Set-Visible $e.Exclaim $false; Set-Visible $e.Zzz $false; Set-Visible $e.ThinkDots $false
+  Set-Visible $e.PartyHat $false; Set-Visible $e.Confetti $false
   Set-Visible $e.IrisL $true; Set-Visible $e.IrisR $true
   Set-Visible $e.PupilL $true; Set-Visible $e.PupilR $true
   Set-Visible $e.GlintL $true; Set-Visible $e.GlintR $true
@@ -504,6 +554,12 @@ function Set-PetExpression([string]$state) {
       Set-Visible $e.Exclaim $true
       $e.IrisL.Width = 18; $e.IrisR.Width = 18
     }
+    'celebrate' {
+      # 干完活：大笑 + 派对帽 + 彩纸（气泡让位给帽子，不显示）
+      Set-Visible $e.MouthSmile $false; Set-Visible $e.MouthOpen $true
+      Set-Visible $e.PartyHat $true
+      Set-Visible $e.Confetti $true
+    }
     'sleep' {
       Set-Visible $e.IrisL $false; Set-Visible $e.IrisR $false
       Set-Visible $e.PupilL $false; Set-Visible $e.PupilR $false
@@ -522,6 +578,17 @@ function Update-PetState {
     Set-PetBubble 'DSH 没连上，等等我…'
     return
   }
+  # 庆祝优先于一切：干完活的 3 秒里专心跳舞，气泡让位给派对帽
+  if ($null -ne $script:CelebrateUntil -and (Get-Date) -lt $script:CelebrateUntil) {
+    if ($script:State -ne 'celebrate') { $script:State = 'celebrate'; Set-PetExpression 'celebrate' }
+    Set-PetBubble ''
+    return
+  }
+  if ($null -ne $script:CelebrateUntil) {
+    $script:CelebrateUntil = $null
+    Set-PetExpression 'idle'
+    $script:State = 'idle'
+  }
   if ($script:Pending.Count -gt 0) {
     if ($script:State -ne 'asking') { $script:State = 'asking'; Set-PetExpression 'asking' }
     Set-PetBubble '皇上，需要你拍板！'
@@ -529,6 +596,12 @@ function Update-PetState {
   }
   $serverState = $script:ServerState
   if ([string]::IsNullOrEmpty($serverState)) { $serverState = 'idle' }
+  # 多个会话同时在烧脑：气泡换文案，点桌宠能看到是哪几个
+  if ($script:BusyCount -ge 2) {
+    if ($serverState -ne $script:State) { $script:State = $serverState; Set-PetExpression $serverState }
+    Set-PetBubble "多线程烧脑中（$($script:BusyCount)）· 点我看会话"
+    return
+  }
   if ($serverState -ne $script:State) {
     $script:State = $serverState
     Set-PetExpression $serverState
@@ -545,6 +618,7 @@ function Update-PetState {
 }
 
 $script:ServerState = 'idle'
+$script:BubbleText = ''
 
 $animation = New-Object System.Windows.Threading.DispatcherTimer
 $animation.Interval = [TimeSpan]::FromMilliseconds(90)
@@ -555,6 +629,22 @@ $animation.Add_Tick({
   $e.BobTransform.Y = [math]::Round([math]::Sin($phase) * 4, 1)
 
   switch ($script:State) {
+    'celebrate' {
+      # 蹦得更高、双手举高挥、彩纸往下飘
+      $e.BobTransform.Y = [math]::Round(-[math]::Abs([math]::Sin($phase * 2.2)) * 10, 1)
+      $e.LeftArmRotate.Angle = -55 + [math]::Sin($phase * 3.4) * 22
+      $e.RightArmRotate.Angle = 55 - [math]::Sin($phase * 3.4 + 0.6) * 22
+      $fall = ($script:Tick * 7) % 120
+      $e.ConfTr1.Y = $fall; $e.ConfTr2.Y = ($fall + 40) % 120
+      $e.ConfTr3.Y = ($fall + 70) % 120; $e.ConfTr4.Y = ($fall + 20) % 120
+      $e.ConfTr5.Y = ($fall + 90) % 120; $e.ConfTr6.Y = ($fall + 55) % 120
+      $e.ConfTr1.X = [math]::Round([math]::Sin($phase * 1.7) * 8, 1)
+      $e.ConfTr2.X = [math]::Round([math]::Sin($phase * 1.3 + 1) * -8, 1)
+      $e.ConfTr3.X = [math]::Round([math]::Sin($phase * 1.9 + 2) * 6, 1)
+      $e.ConfTr4.X = [math]::Round([math]::Sin($phase * 1.1 + 3) * -6, 1)
+      $e.ConfTr5.X = [math]::Round([math]::Sin($phase * 2.1 + 4) * 5, 1)
+      $e.ConfTr6.X = [math]::Round([math]::Sin($phase * 1.5 + 5) * -5, 1)
+    }
     'asking' {
       $e.LeftArmRotate.Angle = -35 + [math]::Sin($phase * 2.2) * 14
       $e.RightArmRotate.Angle = 35 - [math]::Sin($phase * 2.2) * 14
@@ -664,9 +754,17 @@ $pump.Add_Tick({
       $script:Bridge.error = ''
       $script:DisconnectedAt = $null
       $script:ServerState = [string]$item.data.state
+      $script:LastSessions = @($item.data.sessions)
+      $script:BusyCount = [int]$item.data.busyCount
       Sync-Pending $item.data.pending
     } elseif ($item.type -eq 'event') {
       if ($item.data.type -eq 'session') { $script:ServerState = [string]$item.data.data.state }
+      if ($item.data.type -eq 'celebrate') {
+        # 桥接判定「一个够长的任务干完了」→ 跳一小段
+        $script:CelebrateUntil = (Get-Date).AddMilliseconds([int]$config.celebrateMs)
+        if ($config.sound) { [System.Media.SystemSounds]::Asterisk.Play() }
+        Write-PetLog "任务完成，庆祝 $($config.celebrateMs)ms（$($item.data.data.title)）"
+      }
     } elseif ($item.type -eq 'transport') {
       if ($script:Bridge.connected) { $script:DisconnectedAt = Get-Date }
       $script:Bridge.connected = $false
@@ -707,6 +805,12 @@ $pump.Add_Tick({
 
   Update-PetState
   Show-NextCard
+
+  # 会话面板开着的时候每秒刷一次内容
+  if ($null -ne $script:SessionsPanel) {
+    $script:PanelTick++
+    if (($script:PanelTick % 8) -eq 0) { Update-SessionsPanel $script:LastSessions }
+  }
 })
 $pump.Start()
 

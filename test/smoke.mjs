@@ -60,6 +60,8 @@ apply(ctx, {
   // 指向临时文件：测试不碰仓库里那份真配置
   petConfig: join(home, 'pet-config.json'),
   petStopScript: noopStop,
+  // 测试里任何轮次都算「干完一个任务」，方便断言 celebrate
+  celebrateMinTurnMs: 0,
 })
 
 const server = createServer((req, res) => {
@@ -108,8 +110,15 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
  * 挂着的那个请求放进 waitingPoll，有 pending 事件时会被立刻唤醒，正好拿来断言事件流。
  */
 let waitingPoll = null
+// 续订位点：必须带上，否则缓冲区里的旧事件会让新轮询立刻返回，快照停留在「事件之前」。
+let lastSeq = 0
 async function petOnline() {
-  waitingPoll = fetch(`${base}/pet/events?since=0`, { headers: auth }).then((res) => res.json())
+  waitingPoll = fetch(`${base}/pet/events?since=${lastSeq}`, { headers: auth })
+    .then((res) => res.json())
+    .then((batch) => {
+      if (typeof batch.seq === 'number') lastSeq = batch.seq
+      return batch
+    })
   await sleep(150)
 }
 
@@ -228,6 +237,51 @@ check('POST /pet/ui/stop 返回 200', stopUi.status === 200)
 const afterStop = await (await fetch(`${base}/pet/ui/state`, { headers: { 'sec-fetch-site': 'same-origin' } })).json()
 check('停止后立刻报告未运行（不等心跳过期）', afterStop.petRunning === false)
 check('停止后 petStarting 为 false', afterStop.petStarting === false)
+
+// 11. 会话重点信息（多线程烧脑中）与完成庆祝
+// 事件是「来一条就唤醒」的分帧投递：一次 set 里连推几条时，第一个批次只带得走前面那条，
+// 后一条留给下一次轮询（桌宠就是这么循环读的）。所以断言快照走 /pet/state（永远现算），
+// 断言事件用 drainEvents 把缓冲区读干。
+const readState = async () => (await fetch(`${base}/pet/state`, { headers: auth })).json()
+async function drainEvents(type = null, timeoutMs = 2000) {
+  const deadline = Date.now() + timeoutMs
+  const seen = []
+  while (Date.now() < deadline) {
+    // wait=250：把挂起时长压到秒以下，否则「没新事件」那一趟要等满 20 秒
+    const batch = await (await fetch(`${base}/pet/events?since=${lastSeq}&wait=250`, { headers: auth })).json()
+    if (typeof batch.seq === 'number') lastSeq = batch.seq
+    seen.push(...(batch.events ?? []))
+    if (type !== null && seen.some((event) => event.type === type)) return seen
+    if (type === null && batch.timeout === true) return seen
+  }
+  return seen
+}
+
+const sessionListener = listeners.get('session/event')[0].listener
+check('注册了 session/event 监听', typeof sessionListener === 'function')
+const sessionA = { header: { id: 'sess-a', title: '任务A', cwd: 'D:\\demo-a' } }
+const sessionB = { header: { id: 'sess-b', title: '任务B', cwd: 'D:\\demo-b' } }
+
+await petOnline()
+sessionListener(sessionA, { type: 'turn/start', data: {} })
+sessionListener(sessionB, { type: 'turn/start', data: {} })
+const busyState = await readState()
+check('两个会话同时忙 → busyCount=2', busyState.busyCount === 2)
+const infoA = busyState.sessions.find((item) => item.id === 'sess-a')
+check('会话快照带标题', infoA?.title === '任务A')
+check('会话快照带工作目录', infoA?.cwd === 'D:\\demo-a')
+check('会话快照带状态起始时间', typeof infoA?.stateSince === 'number')
+
+sessionListener(sessionA, { type: 'tool/call', data: { toolName: 'pwsh' } })
+sessionListener(sessionA, { type: 'turn/end', data: { reason: { kind: 'done' } } })
+const celebrateEvents = await drainEvents('celebrate')
+check('成功轮次结束推送 celebrate 事件', celebrateEvents.some((event) => event.type === 'celebrate'))
+
+sessionListener(sessionB, { type: 'tool/call', data: {} })
+sessionListener(sessionB, { type: 'turn/end', data: { reason: { kind: 'error' } } })
+const errorEvents = await drainEvents()
+check('失败轮次不庆祝', errorEvents.some((event) => event.type === 'celebrate') === false)
+check('失败轮次会话状态记为 error', (await readState()).sessions.find((item) => item.id === 'sess-b')?.state === 'error')
 
 server.close()
 await rm(home, { recursive: true, force: true })

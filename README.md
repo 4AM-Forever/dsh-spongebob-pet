@@ -4,6 +4,8 @@
 
 Windows 桌面上的海绵宝宝：DSH 需要**用户确认或选择**（工具审批、`ask_user_question`）时，它跳到屏幕最前面把人叫过来，直接在桌宠卡片上点掉，DSH 立刻继续跑。桌宠本体是零依赖的 PowerShell + WPF（不是 Electron，不下载任何二进制）。
 
+平时它跟着 DSH 的节奏：干活时忙活、出错时叉眼；**干完一个够长的任务会戴派对帽跳一小段庆祝**；**多个会话一起烧脑时气泡换成「多线程烧脑中（N）」，点一下桌宠列出这几个会话在干什么**。
+
 参考实现：[clawd-on-desk](https://github.com/rullerzhou-afk/clawd-on-desk)（Electron 像素宠物 + DSH 宿主插件）。本实现把它的「只接审批」扩到**审批 + 提问**两条 seam。
 
 ![审批卡片](docs/screenshot-approval.png)
@@ -69,11 +71,13 @@ dsh plugin --profile web remove dsh-spongebob-pet
 | `working` | 工具调用 / 助手输出 | 双臂上下忙活 |
 | `error` | 工具失败 / 轮次异常结束 | 叉眼 + 汗滴 |
 | `asking` | 有待答请求 | 举双手 + 感叹号 + 「皇上，需要你拍板！」 |
+| `celebrate` | 轮次正常结束且耗时 ≥ `celebrateMinTurnMs` | 戴派对帽 + 撒彩纸 + 蹦跳 |
 | `sleep` | DSH 失联 | 闭眼 + 「z Z」 |
 
 ## 交互
 
-- 左键拖动：挪位置（退出时记住；分辨率变化导致跑到屏幕外会自动拉回右下角）
+- **点一下**：弹出/收起「进行中的会话」面板（贴桌宠左侧，放不下换右侧），逐条显示会话标题、状态、已持续时间、最后工具与工作目录，每秒刷新；面板也认 `Esc`。位移超过 4px 才算拖动，所以点击和拖动不会互相误伤。
+- **拖动**：挪位置（退出时记住；分辨率变化导致跑到屏幕外会自动拉回右下角）
 - 右键 / 托盘：显示隐藏、免打扰、**大小（大/中/小）**、打开 DSH 网页、回到右下角、退出
 - **启动方式**：双击 `pet/SpongeBobPet.exe`（或让设置页的「启动桌宠」拉起）。这个 exe 是 Windows 子系统程序（PE Subsystem=2），用 `CreateNoWindow` 拉起 `SpongeBobPet.ps1`——**不闪 cmd 窗口，也不在任务栏留最小化控制台**。插件按 `exe → explorer+cmd → 直接 spawn powershell` 的顺序降级。
 - **大小三档**：`大` 220×284（默认）、`中` 158×204、`小` 110×142；三个入口都能改，改完 4 秒内生效，不用重启桌宠
@@ -99,6 +103,7 @@ dsh-spongebob-pet/           ← 这个目录就是插件包，也是要上传�
 │  ├─ SpongeBobPet.ps1       主程序：窗口、托盘、状态机、取件循环
 │  ├─ lib/Art.ps1            海绵宝宝矢量形象（XAML）与表情元素索引
 │  ├─ lib/Card.ps1           确认/选择卡片
+│  ├─ lib/Sessions.ps1       「进行中的会话」面板（多会话烧脑时点出来看）
 │  ├─ lib/Ui.ps1             Win32 调用（置顶/抢焦点/闪烁）与控件工厂
 │  ├─ start-pet.cmd          启动器（无参数双击即可）
 │  ├─ restart-pet.cmd        先清残留再启动
@@ -106,8 +111,8 @@ dsh-spongebob-pet/           ← 这个目录就是插件包，也是要上传�
 │  ├─ install-autostart.ps1  写开机自启快捷方式（指向 SpongeBobPet.exe）
 │  ├─ SpongeBobPet.exe       无控制台启动器（源：launcher/PetLauncher.cs，tools/build-launcher.ps1 编译）
 │  └─ config.json            配置
-├─ test/                     smoke.mjs（28 项逻辑自测）、pet-server.mjs（联调假 DSH）
-├─ tools/                    check-syntax（语法关）、restart-dsh（看门狗重启）、verify-live（四项硬证据）、build-launcher（编译启动器）
+├─ test/                     smoke.mjs（36 项逻辑自测）、stub-bridge.mjs（端到端用的假桥接）、pet-server.mjs（联调假 DSH）
+├─ tools/                    check-syntax（语法关）、e2e-pet-features（桌宠端到端）、restart-dsh（看门狗重启）、verify-live（四项硬证据）、build-launcher（编译启动器）
 └─ docs/                     截图
 ```
 
@@ -123,6 +128,7 @@ dsh-spongebob-pet/           ← 这个目录就是插件包，也是要上传�
 | `dnd` | `false` | 免打扰；桌宠连上 DSH 后会把这个开关同步过去（也可从托盘切换，会写回本文件） |
 | `opacity` | `1.0` | 宠物透明度 |
 | `size` | `large` | 大小档位：`large`（大，220×284）/ `medium`（中，158×204）/ `small`（小，110×142） |
+| `celebrateMs` | `3200` | 庆祝动画时长（毫秒）。宿主判定「这次值不值得庆祝」的门槛是 `lib/index.js` 里 `DEFAULTS.celebrateMinTurnMs`（默认 8 秒，可随插件配置覆盖） |
 | `bridgeUrl` | `""` | 留空＝读握手文件里的地址 |
 | `pollTimeout` | `40` | 长轮询客户端超时（秒） |
 | `position` | `-1,-1` | 记住的位置，`-1` 表示右下角 |
@@ -133,7 +139,8 @@ dsh-spongebob-pet/           ← 这个目录就是插件包，也是要上传�
 
 | 项 | 方式 | 结果 |
 |---|---|---|
-| 桥接逻辑 28 项（令牌、取件、审批允许/拒绝、提问作答与非法选项、委派、超时、离线、免打扰、`/pet/ui/*` 设置页路由与切档、停止后立即报未运行） | `node test/smoke.mjs` | 28/28 通过 |
+| 桥接逻辑 36 项（令牌、取件、审批允许/拒绝、提问作答与非法选项、委派、超时、离线、免打扰、`/pet/ui/*` 设置页路由与切档、停止后立即报未运行、多会话 `busyCount`/会话明细、成功轮次推 `celebrate` 且失败轮次不庆祝） | `node test/smoke.mjs` | 36/36 通过 |
+| **桌宠端到端 14 项**（多会话气泡、点桌宠弹出/收起会话面板、庆祝动画、运行期无异常） | `powershell -File tools\e2e-pet-features.ps1`（临时副本 + `test/stub-bridge.mjs` 假桥接，不碰正在跑的那只桌宠） | 14/14 通过（连跑 3 次） |
 | 审批：允许 / 拒绝 | 假 DSH 触发 → 模拟点击卡片按钮 | DSH 侧收到 `allowed-once` / `rejected` |
 | 提问：单选 + 多选 + 自定义回答 + 跳过 | UI Automation 驱动真卡片作答 | `{"answers":[{"id":"q1","selected":[]},{"id":"q2","selected":["桥接插件","文档"]},{"id":"q3","selected":[],"custom":"这是桌宠写的自定义回答"}]}`，中文无损 |
 | 委派：`Esc` / 「交给网页回答」 | 按下 Esc | 桥接侧走 `next()`，回落原生网页应答者 |
@@ -142,7 +149,7 @@ dsh-spongebob-pet/           ← 这个目录就是插件包，也是要上传�
 | 压暗遮罩 | 对比弹卡前后屏幕亮度 | 13.9 vs 25.0（≈44% 变暗） |
 | 插件挂载 | `dsh --profile web --dump-config` | 配置树中出现 `id: spongebob-pet` |
 | **真机 DSH 链路** | 重启 `dsh web` 后由真人作答；轮询桥接 + UI Automation 留证 | `pending=1 state=asking 卡片窗口:在屏=True` → 卡片上点击 → `pending=0`，答案回传 DSH |
-| 语法自检关 | `tools/check-syntax.ps1`；反向测试一个「两行并一行」的文件 | 16 个文件全过；反向测试按预期失败（退出码 1） |
+| 语法自检关 | `tools/check-syntax.ps1`；反向测试一个「两行并一行」的文件 | 43 项全过；反向测试按预期失败（退出码 1） |
 | 大小三档（启动时） | 逐个档位写 `config.json` → 启桌宠 → UIAutomation 量窗口 | 大 330×426 / 中 237×306 / 小 165×213 物理像素（150% 缩放） |
 | 大小三档（运行中切换） | 桌宠跑着时只改 `config.json` | 4 秒内跟随：165×213 → 330×426 → 237×306，日志留痕「配置文件里的档位变成 …，跟随切换」 |
 
@@ -157,6 +164,7 @@ dsh-spongebob-pet/           ← 这个目录就是插件包，也是要上传�
 | 1. 语法关 | `powershell -ExecutionPolicy RemoteSigned -File tools\check-syntax.ps1` | JS 走 `node --check`、PS1 走 PowerShell 解析器、JSON 走 `ConvertFrom-Json`；任何一项不过就退出码 1 |
 | 2. 重启（自带第 1 步） | `tools\restart-dsh.ps1` | 重启前先跑语法关，**不过就拒绝重启**（DSH 保持原状，不会被带崩） |
 | 3. 链路自检 | `tools\verify-live.ps1` | 插件路由 + 桌宠进程 + 窗口在屏 + 长轮询心跳，四项硬证据 |
+| 4. 桌宠端到端（改到 `pet/` 时跑） | `tools\e2e-pet-features.ps1` | 临时副本 + 假桥接验一遍多会话面板与庆祝；失败会自动留下临时目录（含完整 `pet.log`） |
 
 **注意**：
 
@@ -174,6 +182,7 @@ dsh-spongebob-pet/           ← 这个目录就是插件包，也是要上传�
 | 桌宠起不来 | 前台跑一次看报错：`powershell -ExecutionPolicy RemoteSigned -STA -File pet\SpongeBobPet.ps1`；看 `pet/pet.log` |
 | 双击启动器被杀软删掉 | 把项目目录加进杀软信任区；或直接用设置页的「启动桌宠」 |
 | 双开 | 有单实例互斥，第二次启动会直接退出 |
+| 点桌宠没反应 / 面板不弹 | 看 `pet/pet.log` 的「桌宠被点击：位移判定=点击/拖动」：记成「拖动」说明按下的位置与光标差得远，是真把这一下当成拖窗口了；没有这行说明鼠标消息没到窗口（多为安全软件拦合成点击） |
 | 改完 `pet/**/*.ps1` 后乱码报错 | 文件必须存成 **UTF-8 带 BOM** |
 
 ## 版权

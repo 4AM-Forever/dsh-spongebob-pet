@@ -111,6 +111,34 @@ $script:PetCanvasXaml = @'
   <TextBlock x:Name="ThinkDots" Canvas.Left="184" Canvas.Top="56" FontFamily="Segoe UI" FontSize="20" FontWeight="Bold"
              Foreground="#4A6FA5" Text="…" Visibility="Collapsed"/>
 
+  <!-- 庆祝：派对帽 + 飘落的彩纸（只在 celebrate 状态显示）-->
+  <Canvas x:Name="PartyHat" Visibility="Collapsed">
+    <Path Fill="#E03131" Data="M 110,6 L 94,44 L 126,44 Z"/>
+    <Path Fill="#C0392B" Data="M 110,6 L 102,25 L 118,25 Z"/>
+    <Ellipse Canvas.Left="103" Canvas.Top="0" Width="14" Height="14" Fill="#F6E14B"/>
+    <Ellipse Canvas.Left="90" Canvas.Top="38" Width="40" Height="8" Fill="#3E9BDE"/>
+  </Canvas>
+  <Canvas x:Name="Confetti" Visibility="Collapsed">
+    <Rectangle x:Name="Conf1" Canvas.Left="34" Canvas.Top="70" Width="9" Height="9" Fill="#E03131">
+      <Rectangle.RenderTransform><TranslateTransform x:Name="ConfTr1" X="0" Y="0"/></Rectangle.RenderTransform>
+    </Rectangle>
+    <Rectangle x:Name="Conf2" Canvas.Left="182" Canvas.Top="62" Width="9" Height="9" Fill="#3E9BDE">
+      <Rectangle.RenderTransform><TranslateTransform x:Name="ConfTr2" X="0" Y="0"/></Rectangle.RenderTransform>
+    </Rectangle>
+    <Rectangle x:Name="Conf3" Canvas.Left="18" Canvas.Top="130" Width="8" Height="8" Fill="#1A9F5B">
+      <Rectangle.RenderTransform><TranslateTransform x:Name="ConfTr3" X="0" Y="0"/></Rectangle.RenderTransform>
+    </Rectangle>
+    <Rectangle x:Name="Conf4" Canvas.Left="196" Canvas.Top="122" Width="8" Height="8" Fill="#F6E14B">
+      <Rectangle.RenderTransform><TranslateTransform x:Name="ConfTr4" X="0" Y="0"/></Rectangle.RenderTransform>
+    </Rectangle>
+    <Rectangle x:Name="Conf5" Canvas.Left="52" Canvas.Top="30" Width="7" Height="7" Fill="#9B59B6">
+      <Rectangle.RenderTransform><TranslateTransform x:Name="ConfTr5" X="0" Y="0"/></Rectangle.RenderTransform>
+    </Rectangle>
+    <Rectangle x:Name="Conf6" Canvas.Left="168" Canvas.Top="24" Width="7" Height="7" Fill="#E67E22">
+      <Rectangle.RenderTransform><TranslateTransform x:Name="ConfTr6" X="0" Y="0"/></Rectangle.RenderTransform>
+    </Rectangle>
+  </Canvas>
+
   <!-- 台词气泡 -->
   <Canvas x:Name="StatusBubble" Visibility="Collapsed">
     <Rectangle Canvas.Left="12" Canvas.Top="2" Width="196" Height="44" RadiusX="14" RadiusY="14"
@@ -133,7 +161,9 @@ function New-PetVisual {
     'EyeL','EyeR','IrisL','IrisR','PupilL','PupilR','GlintL','GlintR',
     'EyeLineL','EyeLineR','EyeXL1','EyeXL2','EyeXR1','EyeXR2',
     'MouthSmile','MouthOpen','MouthO','MouthWave',
-    'SweatL','SweatR','Exclaim','Zzz','ThinkDots','StatusBubble','StatusText'
+    'SweatL','SweatR','Exclaim','Zzz','ThinkDots','StatusBubble','StatusText',
+    'PartyHat','Confetti',
+    'ConfTr1','ConfTr2','ConfTr3','ConfTr4','ConfTr5','ConfTr6'
   )
   $elements = @{}
   foreach ($name in $names) { $elements[$name] = $root.FindName($name) }
