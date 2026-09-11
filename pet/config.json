@@ -4,11 +4,11 @@
     "sound":  true,
     "dnd":  false,
     "opacity":  1.0,
-    "size":  "medium",
+    "size":  "small",
     "bridgeUrl":  "",
     "pollTimeout":  40,
     "position":  {
-                     "y":  -1,
-                     "x":  -1
+                     "y":  374,
+                     "x":  1639
                  }
 }

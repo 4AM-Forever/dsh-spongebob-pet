@@ -12,6 +12,9 @@
 
 ### 修复
 
+- **设置页点档位后高亮不动、像是没绑定**：`/pet/ui/state` 在「桌宠不是插件拉起、靠长轮询心跳在线」时会抛 `TypeError`（`petRunning()` 认了心跳，`petPid` 却仍取 `petChild.pid`，此时 `petChild` 是 `null`），webserver 把 handler 抛错答成 **400** → 设置页刷新永远失败 → 状态与高亮停在旧值；而写入路由 `/pet/ui/size` 是好的，所以桌宠确实会变、界面却不变。修法：拆出 `petChildAlive()`，只有真正由插件拉起的子进程才取 pid（`stopPet`、`/pet/ui/state`、握手文件 diagnostics 三处同错一并修）。
+  - 设置页加**乐观高亮**：点下去立刻选中该档并提示「已切到「小」，等桌宠跟随…」，服务端确认后自动让位给真实值；`petPid` 为 `null` 时状态行不再显示「pid null」。
+  - `test/smoke.mjs` 增加 7 条 `/pet/ui/*` 回归用例（含「桌宠靠心跳在线时 state 必须 200」「petPid 允许为 null」「切档后立刻反映」「非法档位 400」），测试用配置路径改为可注入，不再动仓库里的 `pet/config.json`。
 - **BOM 导致 `dsh web` 启动崩溃**：`package.json` 带 UTF-8 BOM 时，dsh 启动逐个 `JSON.parse` bundle 清单会抛 `SyntaxError: Unexpected token ''`，进程直接退出。已剥掉仓库里所有不该带 BOM 的文件（`package.json`、`pet/config.json` 以及先前提交进 git 的那份）。
 - **宿主读配置失败**：桌宠侧 PowerShell 5.1 的 `Set-Content -Encoding UTF8` 会写 BOM，宿主侧 `JSON.parse(readFileSync(..., 'utf8'))` 不剥 BOM → 设置页读档回退默认值、切档位返回失败。两侧都修：PS 改用手写无 BOM（`[System.IO.File]::WriteAllText(..., UTF8Encoding $false)`），JS 侧抽 `readPetConfig()` 读之前剥 BOM 兜底（手改过的存量文件也不会再翻车）。
 - `tools/check-syntax.ps1` 增加 **BOM 规则**：含非 ASCII 的 `.ps1` 必须带 BOM（PS 5.1 无 BOM 按 GBK 读会乱码报错）；其余交给 Node / 浏览器读的文件（`.js`/`.mjs`/`.json`/`.yml`/`.cmd`）**绝不能带 BOM**。这类错误现在提交前就会被拦住（已用带 BOM 的探针文件反向验证）。

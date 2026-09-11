@@ -49,7 +49,14 @@ const ctx = {
   },
 }
 
-apply(ctx, { longPollMs: 800, petIdleMs: 4000, approvalTimeoutMs: 3000, questionTimeoutMs: 3000 })
+apply(ctx, {
+  longPollMs: 800,
+  petIdleMs: 4000,
+  approvalTimeoutMs: 3000,
+  questionTimeoutMs: 3000,
+  // 指向临时文件：测试不碰仓库里那份真配置
+  petConfig: join(home, 'pet-config.json'),
+})
 
 const server = createServer((req, res) => {
   const url = new URL(req.url, 'http://127.0.0.1')
@@ -177,6 +184,32 @@ const control = await post('/pet/control', { dnd: true })
 check('免打扰开关写入成功', (await control.json()).dnd === true)
 const dndResult = approvalListener.listener({ agent: { session: { header: { id: 'sess-1' } } }, toolName: 'bash' }, async () => 'dnd-fallback')
 check('免打扰时回落到原生应答者', (await dndResult) === 'dnd-fallback')
+
+// 9. 设置页用的 /pet/ui/* 路由
+// 回归：petRunning() 认心跳之后，petPid 仍写成 petChild.pid —— 桌宠不是插件拉起时 petChild 是 null，
+// 取 .pid 直接 TypeError；webserver 把 handler 抛错答成 400，设置页刷新永远失败（高亮卡住）。
+await petOnline()
+const uiStateResponse = await fetch(`${base}/pet/ui/state`, { headers: { 'sec-fetch-site': 'same-origin' } })
+check('GET /pet/ui/state 返回 200（桌宠靠心跳在线时不再抛异常）', uiStateResponse.status === 200)
+const uiState = await uiStateResponse.json()
+check('/pet/ui/state 带 petSize 字段', typeof uiState.petSize === 'string')
+check('/pet/ui/state 的 petPid 允许为 null', uiState.petPid === null)
+check('无同源信号时被同源门挡住', (await fetch(`${base}/pet/ui/state`)).status === 403)
+
+const sizeResponse = await fetch(`${base}/pet/ui/size`, {
+  method: 'POST',
+  headers: { origin: `http://127.0.0.1:${server.address().port}`, 'content-type': 'application/json' },
+  body: JSON.stringify({ size: 'small' }),
+})
+check('POST /pet/ui/size 写入成功', sizeResponse.status === 200)
+const sizeAfter = await (await fetch(`${base}/pet/ui/state`, { headers: { 'sec-fetch-site': 'same-origin' } })).json()
+check('切档后 /pet/ui/state 立刻反映新档位', sizeAfter.petSize === 'small')
+const badSize = await fetch(`${base}/pet/ui/size`, {
+  method: 'POST',
+  headers: { origin: `http://127.0.0.1:${server.address().port}`, 'content-type': 'application/json' },
+  body: JSON.stringify({ size: 'huge' }),
+})
+check('非法档位被拒（400）', badSize.status === 400)
 
 server.close()
 await rm(home, { recursive: true, force: true })
