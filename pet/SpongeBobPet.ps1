@@ -81,7 +81,9 @@ function Save-Config {
   }
   if ($WithSize -or -not $out.Contains('size')) { $out['size'] = [string]$config.size }
   $out['position'] = @{ x = [int]$config.position.x; y = [int]$config.position.y }
-  $out | ConvertTo-Json -Depth 5 | Set-Content -Path $configPath -Encoding UTF8
+  # Set-Content -Encoding UTF8 在 PowerShell 5.1 下会写 BOM，宿主侧 JSON.parse 认不了，必须手写无 BOM
+  $json = $out | ConvertTo-Json -Depth 5
+  [System.IO.File]::WriteAllText($configPath, $json, (New-Object System.Text.UTF8Encoding $false))
 }
 
 function Get-PetScale([string]$size) {

@@ -10,6 +10,12 @@
   - 宿主侧新增 `POST /pet/ui/size`（同源校验），`/pet/ui/state` 增加 `petSize` 字段。
   - `config.json` 的 `scale` 字段由 `size` 取代。
 
+### 修复
+
+- **BOM 导致 `dsh web` 启动崩溃**：`package.json` 带 UTF-8 BOM 时，dsh 启动逐个 `JSON.parse` bundle 清单会抛 `SyntaxError: Unexpected token ''`，进程直接退出。已剥掉仓库里所有不该带 BOM 的文件（`package.json`、`pet/config.json` 以及先前提交进 git 的那份）。
+- **宿主读配置失败**：桌宠侧 PowerShell 5.1 的 `Set-Content -Encoding UTF8` 会写 BOM，宿主侧 `JSON.parse(readFileSync(..., 'utf8'))` 不剥 BOM → 设置页读档回退默认值、切档位返回失败。两侧都修：PS 改用手写无 BOM（`[System.IO.File]::WriteAllText(..., UTF8Encoding $false)`），JS 侧抽 `readPetConfig()` 读之前剥 BOM 兜底（手改过的存量文件也不会再翻车）。
+- `tools/check-syntax.ps1` 增加 **BOM 规则**：含非 ASCII 的 `.ps1` 必须带 BOM（PS 5.1 无 BOM 按 GBK 读会乱码报错）；其余交给 Node / 浏览器读的文件（`.js`/`.mjs`/`.json`/`.yml`/`.cmd`）**绝不能带 BOM**。这类错误现在提交前就会被拦住（已用带 BOM 的探针文件反向验证）。
+
 ## 0.1.0 — 2026-09-10
 
 首个公开版本。
