@@ -350,14 +350,20 @@ try {
   Check '拖到屏幕左缘 → 吸附并换成趴墙探头姿态' (Wait-LogText '吸附到屏幕左边缘' 6)
   Start-Sleep -Milliseconds 700
   $dockedRect = (Find-Window '海绵宝宝桌宠' $petProcess.Id).Current.BoundingRectangle
-  Step ("吸附后窗口 X={0}（屏幕左缘 {1}）" -f [int]$dockedRect.X, $screenArea.Left)
-  Check '吸附后贴在屏幕左缘上（略微藏进边缘）' ([math]::Abs($dockedRect.X - $screenArea.Left) -le 24)
+  Step ("吸附后窗口 X={0} W={1}（屏幕左缘 {2}）" -f [int]$dockedRect.X, [int]$dockedRect.Width, $screenArea.Left)
+  # 倾斜要留出外接矩形余量，所以窗口左缘会压在屏幕边外一点，但不能跑到屏幕深处
+  Check '吸附后贴在屏幕左缘上（含留白、压在边缘）' (($dockedRect.X -le ($screenArea.Left + 8)) -and ($dockedRect.X -ge ($screenArea.Left - 90)))
+  # 小档原始窗口 110x142：斜 16° 后必须变宽，不然说明留白不够、身体会被裁掉
+  Check ("倾斜后窗口留出余量（宽 {0} ≥ 128）" -f [int]$dockedRect.Width) ($dockedRect.Width -ge 128)
   $dockConfig = Get-Content (Join-Path $work 'config.json') -Raw -Encoding UTF8 | ConvertFrom-Json
   Check '吸附状态写进配置（重启后接着吸）' ([string]$dockConfig.dock -eq 'left')
 
-  # 再拖走：应当解除吸附、恢复站姿
+  # 再拖走：应当解除吸附、恢复站姿，窗口尺寸也要缩回去
   Invoke-PetDrag 260 60
   Check '拖离边缘 → 解除吸附、恢复正常站姿' (Wait-LogText '离开屏幕边缘，恢复正常站姿' 6)
+  Start-Sleep -Milliseconds 500
+  $undockRect = (Find-Window '海绵宝宝桌宠' $petProcess.Id).Current.BoundingRectangle
+  Check ("解除吸附后窗口缩回原尺寸（宽 {0} ≤ 116）" -f [int]$undockRect.Width) ($undockRect.Width -le 116)
   $undockConfig = Get-Content (Join-Path $work 'config.json') -Raw -Encoding UTF8 | ConvertFrom-Json
   Check '解除吸附也写进配置' ([string]$undockConfig.dock -eq '')
 

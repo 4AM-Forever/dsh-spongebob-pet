@@ -56,6 +56,8 @@ $script:SizePresets = [ordered]@{
   small  = @{ scale = 0.5;  label = '小' }
 }
 $script:CurrentSize = 'large'
+$script:BaseWidth = 220
+$script:BaseHeight = 284
 $script:SizeMenuItems = @{}
 
 $defaults = [ordered]@{
@@ -116,6 +118,9 @@ function Apply-PetSize([string]$size, [bool]$persist = $false) {
   if ($null -ne $window) {
     $window.Width = [math]::Round(220 * $scale)
     $window.Height = [math]::Round(284 * $scale)
+    # 记下「没倾斜时的窗口尺寸」：吸附时要在它基础上补外接矩形的余量
+    $script:BaseWidth = $window.Width
+    $script:BaseHeight = $window.Height
   }
   if ($persist) {
     $config.size = $size
@@ -322,6 +327,22 @@ $script:DockPoses = @{
   bottom = @{ Rotate = 0;   ShiftX = 0;   ShiftY = 4;   Out = 6 }
 }
 
+# 斜着身子时，220×284 的画布绕中心转 θ 后的外接矩形会更大；窗口不补出这块余量，
+# 头和手臂就会被窗口裁掉（皇上实测：吸附后有些部位看不见）。
+function Get-DockPadding([double]$angle) {
+  $scale = 1.0
+  if ($script:BaseWidth -gt 0) { $scale = $script:BaseWidth / 220.0 }
+  $rad = [math]::Abs($angle) * [math]::PI / 180.0
+  $width = 220.0 * $scale
+  $height = 284.0 * $scale
+  $rotatedWidth = $width * [math]::Cos($rad) + $height * [math]::Sin($rad)
+  $rotatedHeight = $width * [math]::Sin($rad) + $height * [math]::Cos($rad)
+  return @{
+    X = [math]::Ceiling(($rotatedWidth - $width) / 2) + 4
+    Y = [math]::Ceiling(($rotatedHeight - $height) / 2) + 4
+  }
+}
+
 # 应用/取消吸附：$edge 为空表示离开所有边缘
 function Apply-PetDock([string]$edge, $area = $null) {
   if ($null -eq $area) { $area = Get-PetScreenArea }
@@ -332,6 +353,16 @@ function Apply-PetDock([string]$edge, $area = $null) {
     $e.DockScale.ScaleY = 1
     $e.DockShift.X = 0
     $e.DockShift.Y = 0
+    # 窗口从「含余量」缩回原尺寸，同时把左上角补回同样多的量，海绵宝宝不会在屏幕上跳一下
+    if ($script:DockPad.X -gt 0 -or $script:DockPad.Y -gt 0) {
+      $restoreX = $script:DockPad.X
+      $restoreY = $script:DockPad.Y
+      $script:DockPad = @{ X = 0; Y = 0 }
+      $window.Width = $script:BaseWidth
+      $window.Height = $script:BaseHeight
+      $window.Left = $window.Left + $restoreX
+      $window.Top = $window.Top + $restoreY
+    }
     if ($script:Dock -ne '') {
       $script:Dock = ''
       $config.dock = ''
@@ -344,18 +375,23 @@ function Apply-PetDock([string]$edge, $area = $null) {
   $e.DockRotate.Angle = $pose.Rotate
   $e.DockShift.X = $pose.ShiftX
   $e.DockShift.Y = $pose.ShiftY
+  # 姿态层绕中心旋转 + 挂墙轻晃，按最大摆幅留余量
+  $pad = Get-DockPadding ($pose.Rotate + 4)
+  $script:DockPad = $pad
+  $window.Width = $script:BaseWidth + 2 * $pad.X
+  $window.Height = $script:BaseHeight + 2 * $pad.Y
   switch ($edge) {
-    'left'   { $window.Left = $area.Left + $pose.Out }
-    'right'  { $window.Left = $area.Right - $window.Width + $pose.Out }
-    'top'    { $window.Top = $area.Top + $pose.Out }
-    'bottom' { $window.Top = $area.Bottom - $window.Height + $pose.Out }
+    'left'   { $window.Left = $area.Left + $pose.Out - $pad.X }
+    'right'  { $window.Left = $area.Right + $pose.Out - $pad.X - $script:BaseWidth }
+    'top'    { $window.Top = $area.Top + $pose.Out - $pad.Y }
+    'bottom' { $window.Top = $area.Bottom + $pose.Out - $pad.Y - $script:BaseHeight }
   }
   if ($script:Dock -ne $edge) {
     $label = @{ left = '左边缘'; right = '右边缘'; top = '上边缘'; bottom = '下边缘' }[$edge]
     $script:Dock = $edge
     $config.dock = $edge
     Save-Config
-    Write-PetLog "吸附到屏幕$label，换成趴墙探头姿态（倾斜 $($pose.Rotate)°）"
+    Write-PetLog "吸附到屏幕$label，换成趴墙探头姿态（倾斜 $($pose.Rotate)°，窗口留白 $($pad.X)x$($pad.Y)）"
   }
 }
 
@@ -375,6 +411,7 @@ function Test-PetDockSnap {
 # 点一下（位移 < 4px）＝开关「进行中会话」面板；拖一段＝挪位置（退出时记住坐标）。
 # 松手时贴着屏幕边缘就吸附上去，换成趴墙探头姿态。
 $script:Dock = ''
+$script:DockPad = @{ X = 0; Y = 0 }
 $script:DragActive = $false
 $script:DragMoved = $false
 $script:DragScreenStart = $null
