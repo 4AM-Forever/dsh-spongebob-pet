@@ -60,7 +60,7 @@ $config = [ordered]@{
   size        = 'small'
   celebrateMs = 1500
   bridgeUrl   = "http://127.0.0.1:$port"
-  pollTimeout = 10
+  pollTimeout = 30
   position    = @{ x = 320; y = 260 }
 }
 $noBom = New-Object System.Text.UTF8Encoding $false
@@ -90,14 +90,25 @@ Add-Type -Namespace E2E -Name Win -MemberDefinition @'
 [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(System.IntPtr hWnd, out uint processId);
 [DllImport("user32.dll")] public static extern bool IsWindowVisible(System.IntPtr hWnd);
 public delegate bool EnumWindowsProc(System.IntPtr hWnd, System.IntPtr lParam);
+static System.IntPtr CenterPoint(int width, int height) {
+  int x = width / 2, y = height / 2;
+  return (System.IntPtr)((y << 16) | (x & 0xFFFF));
+}
 public static void ClickCenter(System.IntPtr hWnd, int width, int height) {
   // 先抢回前台：窗口失去激活时系统会收回鼠标捕获，桌宠那边就认不到这一下「点击」了
   SetForegroundWindow(hWnd);
-  int x = width / 2, y = height / 2;
-  System.IntPtr point = (System.IntPtr)((y << 16) | (x & 0xFFFF));
-  PostMessage(hWnd, 0x0201, (System.IntPtr)1, point);   // WM_LBUTTONDOWN
+  ButtonDown(hWnd, width, height);
   System.Threading.Thread.Sleep(60);
-  PostMessage(hWnd, 0x0202, System.IntPtr.Zero, point); // WM_LBUTTONUP
+  ButtonUp(hWnd, width, height);
+}
+public static void ButtonDown(System.IntPtr hWnd, int width, int height) {
+  PostMessage(hWnd, 0x0201, (System.IntPtr)1, CenterPoint(width, height));   // WM_LBUTTONDOWN
+}
+public static void ButtonUp(System.IntPtr hWnd, int width, int height) {
+  PostMessage(hWnd, 0x0202, System.IntPtr.Zero, CenterPoint(width, height)); // WM_LBUTTONUP
+}
+public static void MouseMoveAt(System.IntPtr hWnd, int x, int y) {
+  PostMessage(hWnd, 0x0200, System.IntPtr.Zero, (System.IntPtr)(((y & 0xFFFF) << 16) | (x & 0xFFFF))); // WM_MOUSEMOVE
 }
 public static void MoveCursor(int x, int y) { SetCursorPos(x, y); }
 public static int CountVisibleWindows(uint processId) {
@@ -134,6 +145,18 @@ function Wait-LogText([string]$needle, [int]$timeoutSec = 15) {
   while ((Get-Date) -lt $deadline) {
     $text = Get-PetLogText
     if ($null -ne $text -and $text.Contains($needle)) { return $true }
+    Start-Sleep -Milliseconds 250
+  }
+  return $false
+}
+
+# 等某句话「又出现一次」：日志里早有同样内容时，只 Contains 会立刻返回，等不到新发生的那一次
+function Wait-LogAgain([string]$needle, [int]$timeoutSec = 8) {
+  $before = ([regex]::Matches((Get-PetLogText), [regex]::Escape($needle))).Count
+  $deadline = (Get-Date).AddSeconds($timeoutSec)
+  while ((Get-Date) -lt $deadline) {
+    $text = Get-PetLogText
+    if ($null -ne $text -and ([regex]::Matches($text, [regex]::Escape($needle))).Count -gt $before) { return $true }
     Start-Sleep -Milliseconds 250
   }
   return $false
@@ -187,8 +210,10 @@ try {
     aggregate = 'working'
     busyCount = 2
     sessions  = @(
-      @{ id = 'sess-a'; title = '任务A'; cwd = 'D:\demo-a'; state = 'working'; stateSince = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds(); lastTool = 'pwsh' },
-      @{ id = 'sess-b'; title = '任务B'; cwd = 'D:\demo-b'; state = 'thinking'; stateSince = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds(); lastTool = $null }
+      # sess-a：宿主给了显示名 label（真宿主由标题/目录名算出来）→ 面板就显示它
+      @{ id = 'sess-a'; label = '任务A'; title = '任务A'; cwd = 'D:\demo-a'; state = 'working'; stateSince = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds(); lastTool = 'pwsh' },
+      # sess-b：宿主什么名字都没给 → 面板必须回退到工作目录名 demo-b，绝不能把 sess-b 摆出来
+      @{ id = 'sess-b'; cwd = 'D:\demo-b'; state = 'thinking'; stateSince = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds(); lastTool = $null }
     )
   } | Out-Null
   Check '两个会话同时忙 → 气泡显示「多线程烧脑中（2）」' (Wait-LogText '气泡：多线程烧脑中（2）')
@@ -203,11 +228,10 @@ try {
   $rect = $petWindow.Current.BoundingRectangle
   $handle = [IntPtr]$petWindow.Current.NativeWindowHandle
   $windowsBefore = [E2E.Win]::CountVisibleWindows([uint32]$petProcess.Id)
-  Step "可见窗口数（点之前）：$windowsBefore"
+  Step ("可见窗口数（点之前）：$windowsBefore；窗口矩形 X=$([int]$rect.X) Y=$([int]$rect.Y) W=$([int]$rect.Width) H=$([int]$rect.Height)")
 
-  # 先把真光标挪到桌宠身上再投消息：桌宠的拖动判定读的是真光标位置（[Cursor]::Position），
-  # 光标若在别处，这一下会被算成「拖动」而不是「点击」。
-  # SetCursorPos 在这台机器上会被安全软件延迟放行，所以读回来确认落点，不能盲等。
+  # 点击/拖动都基于「真光标位置」：桌宠按光标位移区分点击与拖动，所以得先把光标放到它身上。
+  # 这个脚本的进程必须连在交互桌面上——远程/服务会话里 Cursor.Position 恒为 0,0，根本挪不动。
   function Move-CursorTo([int]$x, [int]$y) {
     for ($i = 0; $i -lt 12; $i++) {
       [E2E.Win]::MoveCursor($x, $y) | Out-Null
@@ -215,47 +239,91 @@ try {
       $now = [System.Windows.Forms.Cursor]::Position
       if ([math]::Abs($now.X - $x) -le 2 -and [math]::Abs($now.Y - $y) -le 2) { return $true }
     }
+    $last = [System.Windows.Forms.Cursor]::Position
+    Step ("光标挪不到目标：想让它在 ($x,$y)，实际停在 ($($last.X),$($last.Y))；这个进程多半不在交互桌面上")
     return $false
   }
 
   function Invoke-PetClick {
-    if (-not (Move-CursorTo ([int]($rect.X + $rect.Width / 2)) ([int]($rect.Y + $rect.Height / 2)))) {
-      Step '光标没能挪到桌宠身上（被安全软件拦了？）'
-    }
+    Move-CursorTo ([int]($rect.X + $rect.Width / 2)) ([int]($rect.Y + $rect.Height / 2)) | Out-Null
     [E2E.Win]::ClickCenter($handle, [int]$rect.Width, [int]$rect.Height)
   }
 
   # 以「屏幕上的窗口数」为准反复点到达成为止：窗口多一个/少一个是用户真正看得见的结果，
-  # 比日志先到后到可靠（合成点击偶尔会被系统吞掉，尤其第二次——窗口刚失去激活）。
-  function Invoke-PetClickUntil([int]$expectedWindows, [int]$tries = 3) {
-    for ($attempt = 1; $attempt -le $tries; $attempt++) {
+  # 比日志先到后到可靠（合成点击偶尔会被系统吞掉，尤其刚失去激活的那一下）。
+  # 注意：桌宠的点击/拖动判定读的是真光标位置，跑这个脚本时别动鼠标，否则你的手会被算成拖动。
+  function Set-PanelState([int]$wantOpen) {
+    $target = if ($wantOpen -eq 1) { $windowsBefore + 1 } else { $windowsBefore }
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+      if ([E2E.Win]::CountVisibleWindows([uint32]$petProcess.Id) -eq $target) { return $true }
       Invoke-PetClick
       $deadline = (Get-Date).AddSeconds(4)
-      while ((Get-Date) -lt $deadline) {
-        if ([E2E.Win]::CountVisibleWindows([uint32]$petProcess.Id) -eq $expectedWindows) { return $true }
+      while ((Get-Date) -lt $deadline -and [E2E.Win]::CountVisibleWindows([uint32]$petProcess.Id) -ne $target) {
         Start-Sleep -Milliseconds 200
       }
-      Step "第 $attempt 次点击后窗口数没到 $expectedWindows，再点一次"
     }
-    return $false
+    if ([E2E.Win]::CountVisibleWindows([uint32]$petProcess.Id) -ne $target) {
+      $current = [E2E.Win]::CountVisibleWindows([uint32]$petProcess.Id)
+      Step "面板没到期望状态（期望 $target，当前 $current）"
+    }
+    return ([E2E.Win]::CountVisibleWindows([uint32]$petProcess.Id) -eq $target)
   }
 
-  Check '点一下桌宠 → 会话面板弹出（屏幕多一个窗口）' (Invoke-PetClickUntil ($windowsBefore + 1))
-  Check '面板内容列出任务A（干活中）' (Wait-LogText '任务A[working]' 5)
-  Check '面板内容列出任务B（思考中）' (Wait-LogText '任务B[thinking]' 5)
+  Check '点一下桌宠 → 会话面板弹出（屏幕多一个窗口）' (Set-PanelState 1)
+  Check '面板显示会话标题「任务A」（干活中）' (Wait-LogText '任务A[working]' 5)
+  Check '没有标题的会话回退到工作目录名「demo-b」（思考中）' (Wait-LogText 'demo-b[thinking]' 5)
   Check '面板打开有日志留痕' (Wait-LogText '会话面板已打开' 3)
+  # 会话 id 是内部标识：面板内容行里一个都不许出现
+  $panelLine = @((Get-PetLogText) -split "`n" | Where-Object { $_.Contains('会话面板内容：') })[-1]
+  Check '面板内容不出现会话 id' ($null -ne $panelLine -and -not $panelLine.Contains('sess-'))
 
   # ---- 3. 再点一下：收起面板 ----
-  Check '再点一下桌宠 → 会话面板收起（窗口少回去）' (Invoke-PetClickUntil $windowsBefore)
+  Check '再点一下桌宠 → 会话面板收起（窗口少回去）' (Set-PanelState 0)
   Check '面板关闭有日志留痕' (Wait-LogText '会话面板已关闭' 3)
 
-  # ---- 4. 任务完成：庆祝 ----
+  # ---- 4. 挪桌宠：面板要立刻收掉（它不跟着窗口走，留在原地就是没人管的浮窗） ----
+  Check '拖动前先把面板打开' (Set-PanelState 1)
+  $panelWasOpen = [E2E.Win]::CountVisibleWindows([uint32]$petProcess.Id) -eq ($windowsBefore + 1)
+  $dragWindow = Find-Window '海绵宝宝桌宠' $petProcess.Id
+  $dragRect = $dragWindow.Current.BoundingRectangle
+  $dragHandle = [IntPtr]$dragWindow.Current.NativeWindowHandle
+  $startX = [int]($dragRect.X + $dragRect.Width / 2)
+  $startY = [int]($dragRect.Y + $dragRect.Height / 2)
+
+  # 合成拖动：按下 → 真光标挪一段（桌宠按光标位移判定）→ 补一条移动消息 → 抬键；被吞掉就重试。
+  function Invoke-PetDrag([int]$dx, [int]$dy) {
+    $cx = [int]($dragRect.Width / 2)
+    $cy = [int]($dragRect.Height / 2)
+    Move-CursorTo $startX $startY | Out-Null
+    [E2E.Win]::ButtonDown($dragHandle, [int]$dragRect.Width, [int]$dragRect.Height)
+    Start-Sleep -Milliseconds 150
+    Move-CursorTo ($startX + $dx) ($startY + $dy) | Out-Null
+    [E2E.Win]::MouseMoveAt($dragHandle, $cx + $dx, $cy + $dy)
+    Start-Sleep -Milliseconds 150
+    [E2E.Win]::ButtonUp($dragHandle, [int]$dragRect.Width, [int]$dragRect.Height)
+  }
+
+  $dragged = $false
+  for ($attempt = 1; $attempt -le 3 -and -not $dragged; $attempt++) {
+    Invoke-PetDrag 30 20
+    if (Wait-LogText '位移判定=拖动' 5) { $dragged = $true } else { Step "第 $attempt 次拖动没被认成拖动，再试一次" }
+  }
+  Check '拖动桌宠被判定为「拖动」而非「点击」' $dragged
+  $dragDeadline = (Get-Date).AddSeconds(5)
+  while ((Get-Date) -lt $dragDeadline -and [E2E.Win]::CountVisibleWindows([uint32]$petProcess.Id) -ne $windowsBefore) {
+    Start-Sleep -Milliseconds 200
+  }
+  Check '一开始挪动，会话面板就自动收起' ([E2E.Win]::CountVisibleWindows([uint32]$petProcess.Id) -eq $windowsBefore)
+
+  # ---- 5. 任务完成：庆祝 ----
+  # 拖动时气泡被让开了，先等它自己回来，再推庆祝——否则「庆祝时气泡让位」是白捡的
+  Check '松手后气泡自己回来' (Wait-LogAgain '气泡：多线程烧脑中（2）')
   Send-Stub '/stub/celebrate' @{ title = '任务A'; durationMs = 12000 } | Out-Null
   Check '桥接推 celebrate → 桌宠进入庆祝' (Wait-LogText '任务完成，庆祝 1500ms（任务A）')
-  # 「气泡收起」别的路径也会打，必须确认它出现在庆祝那一行之后
+  # 「气泡收起」别的路径也会打（断线、状态归位），必须确认它出现在庆祝那一行之后
   $afterLog = Get-PetLogText
   $celebrateAt = $afterLog.IndexOf('任务完成，庆祝')
-  $bubbleClearedAt = $afterLog.IndexOf('气泡收起')
+  $bubbleClearedAt = $afterLog.LastIndexOf('气泡收起')
   Check '庆祝期间气泡让位' ($celebrateAt -ge 0 -and $bubbleClearedAt -gt $celebrateAt)
 
   # ---- 5. 全程无异常 ----

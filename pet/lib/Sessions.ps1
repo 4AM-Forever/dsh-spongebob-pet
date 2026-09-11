@@ -29,6 +29,26 @@ function Format-Duration([double]$milliseconds) {
   return "$([int]($minutes / 60)) 小时 $($minutes % 60) 分"
 }
 
+# 路径最后一段，作为没有标题时的会话名（与 DSH 侧同口径）
+function Get-WorkspaceName([string]$path) {
+  if ([string]::IsNullOrEmpty($path)) { return '' }
+  $trimmed = $path.TrimEnd([char[]]@('/', '\'))
+  $index = [Math]::Max($trimmed.LastIndexOf('/'), $trimmed.LastIndexOf('\'))
+  if ($index -lt 0) { return $trimmed }
+  return $trimmed.Substring($index + 1)
+}
+
+# 界面上只出现会话名：宿主给的 label → 标题 → 工作目录名 → 未命名会话。
+# 会话 id 是内部标识，任何情况下都不上界面。
+function Get-SessionDisplayName($session) {
+  foreach ($candidate in @($session.label, $session.title)) {
+    if (-not [string]::IsNullOrEmpty($candidate)) { return [string]$candidate }
+  }
+  $base = Get-WorkspaceName ([string]$session.cwd)
+  if (-not [string]::IsNullOrEmpty($base)) { return $base }
+  return '未命名会话'
+}
+
 function New-SessionRow($session, [int]$index) {
   $row = New-Object System.Windows.Controls.StackPanel
   $row.Margin = New-Object System.Windows.Thickness(0, 0, 0, $(if ($index -eq 0) { 10 } else { 10 }))
@@ -47,8 +67,7 @@ function New-SessionRow($session, [int]$index) {
   $dot.VerticalAlignment = [System.Windows.VerticalAlignment]::Top
   $head.Children.Add($dot) | Out-Null
 
-  $titleText = if ($session.title) { [string]$session.title } else { ([string]$session.id) }
-  $title = New-Text $titleText 13.5 '#2A2A2A' $true
+  $title = New-Text (Get-SessionDisplayName $session) 13.5 '#2A2A2A' $true
   $title.MaxWidth = 360
   $title.TextTrimming = 'CharacterEllipsis'
   $head.Children.Add($title) | Out-Null
@@ -130,7 +149,7 @@ function Update-SessionsPanel($sessions) {
     return
   }
   # 面板每秒刷新，内容签名没变就不记日志，免得把 pet.log 刷爆
-  $signature = (@($list | ForEach-Object { "$($_.title)[$($_.state)]" }) -join ' | ')
+  $signature = (@($list | ForEach-Object { "$(Get-SessionDisplayName $_)[$($_.state)]" }) -join ' | ')
   if ($signature -ne $script:PanelSignature) {
     $script:PanelSignature = $signature
     Write-PetLog "会话面板内容：$signature"

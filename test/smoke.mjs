@@ -259,8 +259,12 @@ async function drainEvents(type = null, timeoutMs = 2000) {
 
 const sessionListener = listeners.get('session/event')[0].listener
 check('注册了 session/event 监听', typeof sessionListener === 'function')
-const sessionA = { header: { id: 'sess-a', title: '任务A', cwd: 'D:\\demo-a' } }
-const sessionB = { header: { id: 'sess-b', title: '任务B', cwd: 'D:\\demo-b' } }
+// 真实的 session.header 只有 id / cwd / origin / parentSession —— 标题是走 session/title 事件下发的。
+// 之前用例在 header 里塞 title，等于替实现圆谎：真机上标题永远拿不到，界面只好退回显示会话 id。
+const sessionA = { header: { id: 'sess-a', cwd: 'D:\\demo-a' } }
+const sessionB = { header: { id: 'sess-b', cwd: 'D:\\demo-b' } }
+const sessionC = { header: { id: 'sess-c', cwd: 'D:\\demo-c' } }
+const sessionD = { header: { id: 'sess-d' } }
 
 await petOnline()
 sessionListener(sessionA, { type: 'turn/start', data: {} })
@@ -268,14 +272,28 @@ sessionListener(sessionB, { type: 'turn/start', data: {} })
 const busyState = await readState()
 check('两个会话同时忙 → busyCount=2', busyState.busyCount === 2)
 const infoA = busyState.sessions.find((item) => item.id === 'sess-a')
-check('会话快照带标题', infoA?.title === '任务A')
 check('会话快照带工作目录', infoA?.cwd === 'D:\\demo-a')
 check('会话快照带状态起始时间', typeof infoA?.stateSince === 'number')
+check('还没拿到标题时，显示名回退到工作目录名', infoA?.label === 'demo-a')
+
+sessionListener(sessionA, { type: 'session/title', data: { title: '改接口路径', messageSeqs: [], source: { kind: 'user' } } })
+const titled = await readState()
+check('session/title 事件写入标题', titled.sessions.find((item) => item.id === 'sess-a')?.title === '改接口路径')
+check('标题到位后显示名换成标题', titled.sessions.find((item) => item.id === 'sess-a')?.label === '改接口路径')
+
+sessionListener(sessionC, { type: 'turn/start', data: {} })
+sessionListener(sessionD, { type: 'turn/start', data: {} })
+const named = await readState()
+check('只有目录的会话，显示名取目录名', named.sessions.find((item) => item.id === 'sess-c')?.label === 'demo-c')
+check('什么都没有的会话，显示名叫「未命名会话」', named.sessions.find((item) => item.id === 'sess-d')?.label === '未命名会话')
+check('显示名里绝不出现会话 id', named.sessions.every((item) => !String(item.label).includes('sess-')))
 
 sessionListener(sessionA, { type: 'tool/call', data: { toolName: 'pwsh' } })
 sessionListener(sessionA, { type: 'turn/end', data: { reason: { kind: 'done' } } })
 const celebrateEvents = await drainEvents('celebrate')
-check('成功轮次结束推送 celebrate 事件', celebrateEvents.some((event) => event.type === 'celebrate'))
+const celebrateEvent = celebrateEvents.find((event) => event.type === 'celebrate')
+check('成功轮次结束推送 celebrate 事件', celebrateEvent !== undefined)
+check('庆祝事件里带的是会话名而不是 id', celebrateEvent?.data?.title === '改接口路径')
 
 sessionListener(sessionB, { type: 'tool/call', data: {} })
 sessionListener(sessionB, { type: 'turn/end', data: { reason: { kind: 'error' } } })

@@ -16,6 +16,8 @@ const state = {
 const queued = []
 /** 挂起中的长轮询（有新事件或状态变化时唤醒） */
 const waiters = new Set()
+/** 单次长轮询最多挂多久：挂过客户端超时会被判成断线（真桥接 20 秒，桌宠客户端默认 40 秒） */
+const MAX_HOLD_MS = 8_000
 
 const snapshot = () => ({
   ready: true,
@@ -71,11 +73,18 @@ const server = createServer(async (req, res) => {
       const batch = queued.filter((event) => event.seq > since)
       if (!force && batch.length === 0) return
       if (!waiters.delete(reply)) return
+      clearTimeout(reply.timer)
       json(res, 200, { ...snapshot(), events: batch, timeout: batch.length === 0 })
     }
     waiters.add(reply)
+    // 挂到上限就空手回一帧（真桥接也是这么干的），否则客户端先超时、桌宠会显示「DSH 没连上」
+    reply.timer = setTimeout(() => reply(true), MAX_HOLD_MS)
+    reply.timer.unref?.()
     reply(false) // 有新事件立刻回，没有就挂着等 /stub/* 唤醒
-    req.on('close', () => waiters.delete(reply))
+    req.on('close', () => {
+      clearTimeout(reply.timer)
+      waiters.delete(reply)
+    })
     return
   }
 

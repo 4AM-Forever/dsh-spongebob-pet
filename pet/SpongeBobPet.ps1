@@ -306,7 +306,11 @@ $window.Add_MouseMove({
   $now = [System.Windows.Forms.Cursor]::Position
   $dx = $now.X - $script:DragScreenStart.X
   $dy = $now.Y - $script:DragScreenStart.Y
-  if ((-not $script:DragMoved) -and ([math]::Abs($dx) -gt 4 -or [math]::Abs($dy) -gt 4)) { $script:DragMoved = $true }
+  if ((-not $script:DragMoved) -and ([math]::Abs($dx) -gt 4 -or [math]::Abs($dy) -gt 4)) {
+    $script:DragMoved = $true
+    # 一开始挪动就把会话面板收掉：面板不跟着窗口走，留在原地就是一块没人管的浮窗
+    if ($null -ne $script:SessionsPanel) { Hide-SessionsPanel }
+  }
   if ($script:DragMoved) {
     # 光标位置是物理像素，窗口坐标是 DIU，按当前 DPI 换算
     $scale = 1.0
@@ -572,6 +576,8 @@ function Set-PetExpression([string]$state) {
 }
 
 function Update-PetState {
+  # 挪窗口的时候把气泡让出来（拖完松手，下一拍自动恢复）
+  if ($script:DragActive) { Set-PetBubble ''; return }
   $bridge = $script:Bridge
   if (-not $bridge.connected) {
     if ($script:State -ne 'sleep') { $script:State = 'sleep'; Set-PetExpression 'sleep' }
