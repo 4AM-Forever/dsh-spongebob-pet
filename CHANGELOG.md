@@ -17,6 +17,11 @@
 
 ### 修复
 
+- **桌宠摆在副屏会被定时拽回主屏（多显示器适配）**：自动回收判定用的是 `SystemParameters.WorkArea`——那只是**主屏工作区**，于是摆在副屏的桌宠每 5 秒被判成「跑出屏幕」，直接`Left/Top` 拍回主屏右下角（皇上实测：每次移到副屏，隔一会儿自己跳回来）。
+  - 判定基准改为**整个虚拟桌面**（`VirtualScreen*`，所有屏幕的并集），并且只把窗口挪回可视范围、不整只搬走：副屏被拔掉或分辨率变小后依然能自己回来，同时不动正常摆放在任意屏幕上的桌宠。
+  - 右键/托盘的「回到右下角」改为回到**桌宠当前所在那块屏**的右下角（新增 `Get-PetScreenCorner`，按当前 DPI 在 DIU 与物理像素间换算），不再一律回主屏。
+  - 端到端新增两条回归：把桌宠搬到副屏后停 7 秒不许跑回主屏；再故意丢到虚拟桌面之外，必须自己拉回可视范围。本机实测：搬到副屏停在 (2705,-211)，丢到 4400 后回到 (3490,-211)（＝虚拟桌面右缘 - 窗口宽）。
+- **会话面板显示裸 session id**：DSH 的会话标题走 `session/title` 事件下发（`session.header` 里没有 `title` 字段），旧实现只在 header 里找标题，拿不到就退回显示 `session-xxxx…`。现在宿主接该事件并只对外下发 `label`（标题 → 工作目录名 → 「未命名会话」），桌宠侧同口径，任何情况下都不把会话 id 摆上界面。
 - **会话面板每行都渲染失败**：「已 X 秒」用 `(Get-Date).ToUniversalTime().ToUnixTimeMilliseconds()` 算时长——Windows PowerShell 5.1 跑在 .NET Framework 上，`DateTime` 没有这个方法（只有 `DateTimeOffset` 有），每渲染一行抛一次 `RuntimeException`，状态/时长/工具/目录整行都不显示，`pet.log` 里刷满「UI 线程未捕获异常」。改用 `[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()`；端到端用例现在把「运行期没有未捕获异常」也当断言。
 - **结束桌宠后设置页仍显示运行中**：`stopPet()` 先把心跳清零，紧接着推的 `running:false` 事件又会唤醒桌宠还挂着的长轮询，而长轮询应答时会重新盖上心跳时间戳 → 设置页要再等 30 秒才变「未运行」。修法：给长轮询记下开始时刻，只有「结束桌宠之后新开的」长轮询才算存活信号。
 - **右击桌宠切档位会把桌宠关掉**（从设置页切却没事）：切档位要同步两个菜单的选中态——右键菜单是 WPF `MenuItem`（属性 `IsChecked`），托盘菜单是 WinForms `ToolStripMenuItem`（只有 `Checked`）。代码对两者都设 `IsChecked`，WinForms 项抛 `RuntimeException: 在此对象上找不到属性"IsChecked"`，脚本级 `trap` 随即 `exit 1`，桌宠进程被杀（`pet.log` 里留下 `FATAL`）。修法：按控件类型各设各的属性。并做两处加固：`trap` 改为「应用跑起来之后异常只记日志、继续运行」（只有启动阶段失败才退出），`DispatcherUnhandledException` 里标记 `Handled = true` —— 单个 UI 异常不再能把桌宠整个带走。已用「右击 → 大小 → 小」真实路径验证：桌宠存活、窗口 158×204 → 110×142、日志无异常。
@@ -30,9 +35,9 @@
 ### 验证
 
 - 桥接逻辑自测 **36/36**：`node test/smoke.mjs`。新增用例：多会话同时忙 `busyCount=2`、会话快照带标题/工作目录/状态起始时间、成功轮次推 `celebrate`、失败轮次不庆祝且状态记为 `error`、结束桌宠后立刻报告未运行（不再靠心跳过期）。
-- 桌宠端到端 **22/22**：`powershell -ExecutionPolicy RemoteSigned -File tools/e2e-pet-features.ps1`
+- 桌宠端到端 **24/24**：`powershell -ExecutionPolicy RemoteSigned -File tools/e2e-pet-features.ps1`
   - 做法：把 `pet\` 复制到临时目录，用 `test/stub-bridge.mjs` 顶替宿主（`DSH_HOME` 指向临时目录、`SBP_SINGLETON` 换掉单实例锁名），全程不碰正在运行的那只桌宠；断言只认 `pet.log` 与屏幕上的真实窗口数。脚本另起一个独立看门狗，保证临时副本最多存活 5 分钟。
-  - 覆盖：多会话气泡文案、点桌宠弹出会话面板（窗口数 +1、面板显示会话名且不含会话 id、日志留痕）、再点一下收起、挪动时面板自动收起、`celebrate` 四段庆祝跑完且实测时长对得上（4,070ms / 配置 4,000ms）、运行期无未捕获异常。用例失败时自动保留临时目录，里面有完整 `pet.log`。
+  - 覆盖：多会话气泡文案、点桌宠弹出会话面板（窗口数 +1、面板显示会话名且不含会话 id、日志留痕）、再点一下收起、挪动时面板自动收起、**副屏不被拽回主屏**、**丢出屏幕能自己拉回**、`celebrate` 四段庆祝跑完且实测时长对得上（4,064ms / 配置 4,000ms）、运行期无未捕获异常。用例失败时自动保留临时目录，里面有完整 `pet.log`。
 - 语法关（提交前必过，`.githooks/pre-commit` 拦截）：`powershell -ExecutionPolicy RemoteSigned -File tools/check-syntax.ps1`，**43/43**（JS/PS1/JSON/YML 逐个解析 + BOM 规则）。
 
 ## 0.1.0 — 2026-09-10

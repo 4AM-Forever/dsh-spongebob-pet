@@ -123,6 +123,11 @@ public static void MouseMoveAt(System.IntPtr hWnd, int x, int y) {
   PostMessage(hWnd, 0x0200, System.IntPtr.Zero, (System.IntPtr)(((y & 0xFFFF) << 16) | (x & 0xFFFF))); // WM_MOUSEMOVE
 }
 public static void MoveCursor(int x, int y) { SetCursorPos(x, y); }
+[DllImport("user32.dll")] public static extern bool SetWindowPos(System.IntPtr hWnd, System.IntPtr after, int x, int y, int cx, int cy, uint flags);
+// 把窗口搬到指定屏幕坐标（不改大小、不动 Z 序、不抢焦点）——用来模拟「桌宠被拖到副屏」
+public static void MoveWindowTo(System.IntPtr hWnd, int x, int y) {
+  SetWindowPos(hWnd, System.IntPtr.Zero, x, y, 0, 0, 0x0001 | 0x0004 | 0x0010);
+}
 public static int CountVisibleWindows(uint processId) {
   int count = 0;
   EnumWindows(delegate(System.IntPtr hWnd, System.IntPtr lParam) {
@@ -326,10 +331,39 @@ try {
     Start-Sleep -Milliseconds 200
   }
   Check '一开始挪动，会话面板就自动收起' ([E2E.Win]::CountVisibleWindows([uint32]$petProcess.Id) -eq $windowsBefore)
-
-  # ---- 5. 任务完成：庆祝（有过程，不是闪一下） ----
-  # 拖动时气泡被让开了，先等它自己回来，再推庆祝——否则「庆祝时气泡让位」是白捡的
+  # 拖动期间气泡让开、松手后自己回来。这一步必须紧跟着拖完就查：晚了气泡早回来了，就等不到「新的一次」
   Check '松手后气泡自己回来' (Wait-LogAgain '气泡：多线程烧脑中（2）')
+
+  # ---- 5. 多显示器：摆在副屏不能被拽回主屏 ----
+  # 回归：自动回收判定原来用 SystemParameters.WorkArea（只是主屏工作区），
+  # 摆在副屏的桌宠每 5 秒被当成「跑出屏幕」拽回主屏（皇上实测就是这么烦）。
+  $otherScreens = @([System.Windows.Forms.Screen]::AllScreens | Where-Object { -not $_.Primary })
+  if ($otherScreens.Count -eq 0) {
+    Step '这台机器只有一块屏，跳过副屏用例'
+  } else {
+    $area = $otherScreens[0].WorkingArea
+    $targetX = [int]($area.Left + ($area.Width - $dragRect.Width) / 2)
+    $targetY = [int]($area.Top + 140)
+    [E2E.Win]::MoveWindowTo($dragHandle, $targetX, $targetY)
+    Start-Sleep -Seconds 7
+    $onOther = (Find-Window '海绵宝宝桌宠' $petProcess.Id).Current.BoundingRectangle
+    Step ("搬到副屏后停在 ({0},{1})；副屏工作区 {2},{3} {4}x{5}" -f [int]$onOther.X, [int]$onOther.Y, $area.Left, $area.Top, $area.Width, $area.Height)
+    Check '摆在副屏不会被拽回主屏' (($onOther.X -ge ($area.Left - 4)) -and (($onOther.X + $onOther.Width) -le ($area.Right + 4)))
+
+    # 再故意丢到虚拟桌面之外：回收逻辑本身还得在（拔副屏/改分辨率后要能自己回来）
+    [E2E.Win]::MoveWindowTo($dragHandle, ($area.Right + 800), $targetY)
+    Start-Sleep -Seconds 7
+    $back = (Find-Window '海绵宝宝桌宠' $petProcess.Id).Current.BoundingRectangle
+    # 用 WinForms 的虚拟屏（物理像素），与 SetWindowPos / UIA 的坐标口径一致
+    $vs = [System.Windows.Forms.SystemInformation]::VirtualScreen
+    Step ("丢到屏幕外后回到 ({0},{1})；虚拟屏 {2},{3} {4}x{5}" -f [int]$back.X, [int]$back.Y, $vs.Left, $vs.Top, $vs.Width, $vs.Height)
+    Check '丢到屏幕外能自己拉回可视范围' (
+      ($back.X -ge ($vs.Left - 4)) -and ($back.Y -ge ($vs.Top - 4)) -and
+      (($back.X + $back.Width) -le ($vs.Right + 4)) -and (($back.Y + $back.Height) -le ($vs.Bottom + 4))
+    )
+  }
+
+  # ---- 6. 任务完成：庆祝（有过程，不是闪一下） ----
   Send-Stub '/stub/celebrate' @{ title = '任务A'; durationMs = 12000 } | Out-Null
   Check '桥接推 celebrate → 桌宠开始庆祝' (Wait-LogText '任务完成，庆祝 4000ms（任务A）')
   Check '庆祝头一段先喊一嗓子' (Wait-LogText '气泡：「任务A」搞定，收工～')

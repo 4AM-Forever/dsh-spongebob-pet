@@ -287,6 +287,21 @@ $window.Content = $visual.Root
 $script:Visual = $visual
 Apply-PetSize ([string]$config.size)
 
+# 桌宠当前所在那块屏的右下角（窗口坐标是 DIU，屏幕边框是物理像素，按当前 DPI 换算）。
+# 多显示器全靠这个：不动别的屏、也不跳回主屏。
+function Get-PetScreenCorner([double]$width, [double]$height, [double]$margin) {
+  $scale = 1.0
+  $source = [System.Windows.PresentationSource]::FromVisual($window)
+  if ($null -ne $source) { $scale = $source.CompositionTarget.TransformToDevice.M11 }
+  if ($scale -le 0) { $scale = 1.0 }
+  $center = New-Object System.Drawing.Point([int](($window.Left + $width / 2) * $scale), [int](($window.Top + $height / 2) * $scale))
+  $area = [System.Windows.Forms.Screen]::FromPoint($center).WorkingArea
+  return @{
+    Left = ($area.Right / $scale) - $width - $margin
+    Top  = ($area.Bottom / $scale) - $height - $margin
+  }
+}
+
 # 自己实现拖动：WPF 的 DragMove() 会把 MouseUp 吃掉，没法区分「点一下」和「拖一段」。
 # 点一下（位移 < 4px）＝开关「进行中会话」面板；拖一段＝挪位置（退出时记住坐标）。
 $script:DragActive = $false
@@ -451,8 +466,10 @@ function Toggle-PetVisibility {
   if ($window.IsVisible) { $window.Hide() } else { $window.Show(); $window.Topmost = $true }
 }
 function Reset-PetPosition {
-  $window.Left = [System.Windows.SystemParameters]::WorkArea.Right - $window.Width - 60
-  $window.Top = [System.Windows.SystemParameters]::WorkArea.Bottom - $window.Height - 60
+  # 回到「桌宠当前所在那块屏」的右下角：多显示器下不动别的屏，也不跳回主屏
+  $corner = Get-PetScreenCorner $window.Width $window.Height 60
+  $window.Left = $corner.Left
+  $window.Top = $corner.Top
 }
 function Toggle-Dnd {
   $config.dnd = -not $config.dnd
@@ -718,15 +735,24 @@ $animation.Add_Tick({
     }
   }
 
-  # 显示器分辨率会被远程会话改来改去，窗口一旦落到可视区外就自动回右下角
+  # 显示器分辨率会被远程会话改来改去，窗口一旦跑出可视范围就往回拉一点。
+  # 判定基准必须是「整个虚拟桌面」（所有屏幕的并集）：SystemParameters.WorkArea 只是主屏工作区，
+  # 拿它判定会把摆在副屏的桌宠当成跑出屏幕，每隔几秒拽回主屏（皇上实测就是这么烦）。
   if (($script:Tick % 55) -eq 0) {
-    $area = [System.Windows.SystemParameters]::WorkArea
-    $outside = ($window.Left -gt ($area.Right - 60)) -or ($window.Top -gt ($area.Bottom - 60)) -or
-      (($window.Left + $window.Width) -lt ($area.Left + 60)) -or (($window.Top + $window.Height) -lt ($area.Top + 60))
-    if ($outside) {
-      $window.Left = $area.Right - 320
-      $window.Top = $area.Bottom - 380
-      Write-PetLog ("窗口落在可视区外，已拉回右下角：({0},{1})" -f [int]$window.Left, [int]$window.Top)
+    $virtualLeft = [System.Windows.SystemParameters]::VirtualScreenLeft
+    $virtualTop = [System.Windows.SystemParameters]::VirtualScreenTop
+    $virtualRight = $virtualLeft + [System.Windows.SystemParameters]::VirtualScreenWidth
+    $virtualBottom = $virtualTop + [System.Windows.SystemParameters]::VirtualScreenHeight
+    $visibleWidth = [math]::Min($window.Left + $window.Width, $virtualRight) - [math]::Max($window.Left, $virtualLeft)
+    $visibleHeight = [math]::Min($window.Top + $window.Height, $virtualBottom) - [math]::Max($window.Top, $virtualTop)
+    if ($visibleWidth -lt 80 -or $visibleHeight -lt 80) {
+      $before = "({0},{1})" -f [int]$window.Left, [int]$window.Top
+      # 只把它挪回可视范围，能不动就不动（副屏被拔掉/分辨率变小后也能自己回来）
+      $window.Left = [math]::Min([math]::Max($window.Left, $virtualLeft), $virtualRight - $window.Width)
+      $window.Top = [math]::Min([math]::Max($window.Top, $virtualTop), $virtualBottom - $window.Height)
+      Write-PetLog ("窗口跑出可视范围，拉回 $before → ({0},{1})（虚拟桌面 {2},{3} {4}x{5}）" -f
+        [int]$window.Left, [int]$window.Top, [int]$virtualLeft, [int]$virtualTop,
+        [int]([System.Windows.SystemParameters]::VirtualScreenWidth), [int]([System.Windows.SystemParameters]::VirtualScreenHeight))
     }
   }
 
