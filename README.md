@@ -38,7 +38,7 @@ dsh web
 # 3. 打开设置 → 插件 → 「海绵宝宝桌宠」→ 点「启动桌宠」
 ```
 
-也可以从 GitHub 直接装：`dsh plugin --profile web add github:<你的用户名>/dsh-spongebob-pet`。
+也可以从 GitHub 直接装（建议锁版本）：`dsh plugin --profile web add github:4AM-Forever/dsh-spongebob-pet#v0.2`。
 
 卸载：
 
